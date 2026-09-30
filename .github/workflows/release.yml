@@ -1,0 +1,55 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish release zip
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure and build
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -G Ninja
+          cmake --build build
+
+      - name: Offline tests
+        run: |
+          brew install ffmpeg
+          ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=1080x2340:rate=60 -t 2 \
+            -c:v libx264 -profile:v baseline -pix_fmt yuv420p -bsf:v h264_mp4toannexb \
+            -f h264 /tmp/obs-android-adb-test.h264
+          ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=1080x2340:rate=60 -t 2 \
+            -c:v libx265 -pix_fmt yuv420p -f hevc /tmp/obs-android-adb-test.h265
+          ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc2=size=2340x1080:rate=60 -t 1 \
+            -c:v libx264 -profile:v baseline -pix_fmt yuv420p -bsf:v h264_mp4toannexb \
+            -f h264 /tmp/obs-android-adb-test-rot.h264
+          ./build/obs-android-adb-tests
+
+      - name: Package
+        run: ./scripts/package-release.sh
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ZIP="$(ls release/*.zip)"
+          gh release create "${GITHUB_REF_NAME}" "${ZIP}" "${ZIP}.sha256" \
+            --title "obs-android-adb ${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --notes-file - <<'EOF'
+          Android Screen (ADB) source for OBS Studio — macOS (Apple Silicon).
+
+          **Install:** download the `.zip`, unzip, and copy
+          `obs-android-adb.plugin` to
+          `~/Library/Application Support/obs-studio/plugins/` (see
+          `INSTALL.txt` inside the zip). Requires OBS 30+ and
+          [adb](https://formulae.brew.sh/cask/android-platform-tools) — full
+          instructions in the README.
+          EOF

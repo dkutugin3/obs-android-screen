@@ -1,0 +1,16 @@
+# Build artifacts
+build/
+.deps/
+deps/
+
+# Local research reference clones (not part of the build; the build fetches
+# everything it needs itself — see CMakeLists.txt and scripts/)
+third_party/scrcpy/
+third_party/obs-plugintemplate/
+
+# OS / editor noise
+.DS_Store
+*.user
+*.log
+
+release/
