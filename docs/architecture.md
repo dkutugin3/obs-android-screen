@@ -1,4 +1,4 @@
-# obs-android-adb — Architecture
+# obs-android-screen (module: obs-android-adb) — Architecture
 
 Native OBS Studio source plugin that mirrors an Android device (Samsung Galaxy
 S26, Android 16) screen **and system audio** over a plain USB-C cable, using the

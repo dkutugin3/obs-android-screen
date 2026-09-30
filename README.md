@@ -1,4 +1,4 @@
-# obs-android-adb — Android Screen (ADB) for OBS Studio
+# obs-android-screen — Android Screen (ADB) for OBS Studio
 
 A native OBS Studio source plugin for macOS (Apple Silicon) that mirrors an
 Android phone — video **and system audio** — into OBS over a plain USB-C cable,
@@ -90,8 +90,10 @@ ffmpeg -f lavfi -i testsrc2=size=2340x1080:rate=60 -t 1 -c:v libx264 \
 ### From source
 
 ```bash
-git clone https://github.com/<you>/obs-android-adb.git
-cd obs-android-adb
+git clone https://github.com/dkutugin3/obs-android-screen.git
+cd obs-android-screen
+
+# (the built plugin bundle keeps the module name `obs-android-adb.plugin`)
 ./scripts/build.sh
 ./scripts/install.sh            # copies to ~/Library/Application Support/obs-studio/plugins/
 ./scripts/install.sh remove     # uninstalls
