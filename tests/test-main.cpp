@@ -339,13 +339,13 @@ int main(int argc, char **argv)
 
 	const char *h264 = argc > 1 ? argv[1] : "/tmp/obs-android-adb-test.h264";
 	const char *h265 = argc > 2 ? argv[2] : "/tmp/obs-android-adb-test.h265";
+	const char *rot = argc > 3 ? argv[3] : "/tmp/obs-android-adb-test-rot.h264";
 	testDecoderStream(h264, scrcpy::VideoCodecId::H264, 1080, 2340);
 	if (fileReadable(h265))
 		testDecoderStream(h265, scrcpy::VideoCodecId::H265, 1080, 2340);
 	else
 		fprintf(stderr, "skipping HEVC test (no %s)\n", h265);
 
-	const char *rot = "/tmp/obs-android-adb-test-rot.h264";
 	if (fileReadable(rot))
 		testRotation(h264, rot);
 	else
