@@ -1,5 +1,11 @@
 #include <obs-module.h>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
+
 #include "android-source.hpp"
 #include "device-monitor.hpp"
 
@@ -114,7 +120,11 @@ bool obs_module_load(void)
 	// through the environment.
 	char *serverPath = obs_module_file(SCRCPY_SERVER_FILE);
 	if (serverPath) {
+#ifdef _WIN32
+		_putenv_s("OBS_ANDROID_ADB_SERVER_JAR", serverPath);
+#else
 		setenv("OBS_ANDROID_ADB_SERVER_JAR", serverPath, 0 /* do not overwrite */);
+#endif
 		blog(LOG_INFO, LOGP "scrcpy-server: %s", serverPath);
 		bfree(serverPath);
 	} else {
@@ -125,7 +135,11 @@ bool obs_module_load(void)
 	// plugin work out of the box without platform-tools installed.
 	char *adbDir = obs_module_file("adb");
 	if (adbDir) {
+#ifdef _WIN32
+		_putenv_s("OBS_ANDROID_ADB_BUNDLE_DIR", adbDir);
+#else
 		setenv("OBS_ANDROID_ADB_BUNDLE_DIR", adbDir, 0 /* do not overwrite */);
+#endif
 		bfree(adbDir);
 	}
 
@@ -136,6 +150,9 @@ bool obs_module_load(void)
 
 void obs_module_unload(void)
 {
+#ifdef _WIN32
+	WSACleanup();
+#endif
 	blog(LOG_INFO, LOGP "plugin unloaded");
 }
 

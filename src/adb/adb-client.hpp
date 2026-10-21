@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -17,8 +18,23 @@ struct Device {
 	bool usable() const { return state == DeviceState::Ok; }
 };
 
+// Platform handles for a long-lived child process (see spawn()).
+#ifdef _WIN32
+using PipeHandle = void *; // HANDLE
+using ProcHandle = void *; // HANDLE
+inline constexpr PipeHandle kInvalidPipe = nullptr;
+inline constexpr ProcHandle kInvalidProc = nullptr;
+#else
+using PipeHandle = int;
+using ProcHandle = int; // pid_t
+#define ADB_INVALID_PIPE (-1)
+#define ADB_INVALID_PROC (-1)
+inline constexpr PipeHandle kInvalidPipe = ADB_INVALID_PIPE;
+inline constexpr ProcHandle kInvalidProc = ADB_INVALID_PROC;
+#endif
+
 // Locate the adb executable.
-// Order: explicit override, bundled copy, Homebrew, system, PATH.
+// Order: explicit override, bundled copy, platform-typical installs, PATH.
 // Returns empty string when not found.
 std::string findAdb(const std::string &overridePath = "");
 
@@ -28,9 +44,18 @@ int run(const std::string &adb, const std::vector<std::string> &args, std::strin
 	std::string *stderrOut = nullptr, long timeoutMs = 15000);
 
 // Spawn a long-lived adb command with its stdout piped back to the caller
-// (stderr goes to /dev/null). Returns the read end of the pipe, or -1 on
-// failure. The caller owns the pipe fd and must reap the child.
-int spawn(const std::string &adb, const std::vector<std::string> &args, pid_t *pidOut);
+// (stderr is discarded unless `stderrPipe` is given). `ok` (may be null)
+// reports spawn success. The caller owns the pipes and must reap the child
+// via terminate/reapChild.
+PipeHandle spawn(const std::string &adb, const std::vector<std::string> &args, ProcHandle *procOut, bool *ok,
+	PipeHandle *stderrPipe = nullptr);
+
+// Blocking read from a spawn() pipe: returns the number of bytes read
+// (0 = orderly end of stream, -1 = error).
+long readPipe(PipeHandle pipe, uint8_t *buf, size_t len);
+void closePipe(PipeHandle pipe);
+void terminateChild(ProcHandle proc); // ask the child to die
+void reapChild(ProcHandle proc);      // block until it is gone, release the handle
 
 // Parse `adb devices -l` output.
 std::vector<Device> parseDevicesOutput(const std::string &out);

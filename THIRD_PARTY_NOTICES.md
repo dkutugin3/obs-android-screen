@@ -33,6 +33,19 @@ references the following third-party components:
   [`third_party/adb/NOTICE.txt`](third_party/adb/NOTICE.txt) and shipped
   alongside the binary in the bundle.
 
+## FFmpeg / libavcodec (bundled on Windows)
+
+- **What:** `avcodec-62.dll` and `avutil-60.dll` from the BtbN win64 LGPL
+  **shared** build of FFmpeg 8.1 (<https://github.com/BtbN/FFmpeg-Builds>),
+  used for software H.264/HEVC decoding on Windows. Shipped next to the
+  plugin DLL; also required at build time for the Windows target.
+- **Copyright:** © FFmpeg developers
+- **License:** LGPL-2.1-or-later — <https://ffmpeg.org/legal.html>
+  (source: <https://github.com/BtbN/FFmpeg-Builds> / <https://ffmpeg.org>)
+- The MinGW runtime DLLs (`libgcc_s_seh-1.dll`, `libstdc++-6.dll`,
+  `libwinpthread-1.dll`, GCC runtime library exception) are shipped next to
+  the plugin as well.
+
 ## simde (build-time dependency)
 
 - **What:** [simde](https://github.com/simd-everywhere/simde)

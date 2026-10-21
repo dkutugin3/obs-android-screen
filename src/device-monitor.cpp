@@ -1,10 +1,6 @@
 #include "device-monitor.hpp"
 
-#include <cerrno>
 #include <chrono>
-#include <signal.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
 #include <util/base.h>
 
@@ -154,16 +150,20 @@ void DeviceMonitor::runTracker()
 		return;
 	}
 
-	pid_t pid = -1;
-	int fd = -1;
+	adb::ProcHandle proc = adb::kInvalidProc;
+	adb::PipeHandle pipe = adb::kInvalidPipe;
 	bool broken = false;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		broken = trackerBroken_;
 	}
-	if (!broken)
-		fd = adb::spawn(adb, {"track-devices", "-l"}, &pid);
-	if (fd < 0) {
+	if (!broken) {
+		bool ok = false;
+		pipe = adb::spawn(adb, {"track-devices", "-l"}, &proc, &ok);
+		if (!ok)
+			pipe = adb::kInvalidPipe;
+	}
+	if (pipe == adb::kInvalidPipe) {
 		// Long-lived tracking unavailable; degrade to one-shot polls.
 		pollOnce(adb);
 		pollRequested_ = false;
@@ -176,7 +176,7 @@ void DeviceMonitor::runTracker()
 		adbFailed_ = false;
 		adbPath_ = adb;
 	}
-	trackerPid_ = pid;
+	trackerProc_ = (uintptr_t)proc;
 	blog(LOG_INFO, "[obs-android-adb] using adb: %s", adb.c_str());
 	blog(LOG_INFO, "[obs-android-adb] tracking device events (adb track-devices)");
 
@@ -185,20 +185,17 @@ void DeviceMonitor::runTracker()
 	// complete current device list (empty list = zero length). One message
 	// arrives for every device connect/disconnect/state change.
 	std::string buf;
-	char chunk[4096];
+	uint8_t chunk[4096];
 	bool done = false;
 	bool framingError = false;
 	while (!done && !stop_) {
-		ssize_t n = read(fd, chunk, sizeof(chunk));
-		if (n < 0) {
-			if (errno == EINTR)
-				continue;
+		long n = adb::readPipe(pipe, chunk, sizeof(chunk));
+		if (n < 0)
 			break;
-		}
 		if (n == 0)
 			break;
 
-		buf.append(chunk, (size_t)n);
+		buf.append((const char *)chunk, (size_t)n);
 		while (!done && buf.size() >= 4) {
 			size_t len = 0;
 			bool valid = true;
@@ -247,11 +244,12 @@ void DeviceMonitor::runTracker()
 		}
 	}
 
-	close(fd);
-	pid_t tracked = trackerPid_.exchange(-1);
-	if (tracked > 0) {
-		kill(tracked, SIGTERM); // no-op if it already exited on its own
-		waitpid(tracked, nullptr, 0);
+	adb::closePipe(pipe);
+	uintptr_t tracked = trackerProc_.exchange(0);
+	if (tracked != 0) {
+		adb::ProcHandle proc2 = (adb::ProcHandle)tracked;
+		adb::terminateChild(proc2); // no-op if it already exited on its own
+		adb::reapChild(proc2);
 	}
 	blog(LOG_INFO, "[obs-android-adb] device event stream ended");
 }
@@ -338,7 +336,7 @@ void DeviceMonitor::notifyObservers()
 
 void DeviceMonitor::killTracker()
 {
-	pid_t pid = trackerPid_.exchange(-1);
-	if (pid > 0)
-		kill(pid, SIGTERM); // the tracker's death closes the pipe and wakes read()
+	uintptr_t v = trackerProc_.exchange(0);
+	if (v != 0)
+		adb::terminateChild((adb::ProcHandle)v); // its death closes the pipe and wakes readPipe()
 }

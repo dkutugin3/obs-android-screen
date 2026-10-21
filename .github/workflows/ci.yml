@@ -7,6 +7,46 @@ on:
   pull_request:
 
 jobs:
+  windows:
+    name: Windows (x64) build + offline tests
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          update: false
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            zip
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Offline tests
+        run: |
+          FF="$(ls build/deps/ffmpeg-*/bin/ffmpeg.exe | head -1)"
+          "$FF" -hide_banner -loglevel error -f lavfi -i testsrc2=size=1080x2340:rate=60 -t 2             -c:v libx264 -profile:v baseline -pix_fmt yuv420p -bsf:v h264_mp4toannexb             -f h264 /tmp/obs-android-adb-test.h264
+          "$FF" -hide_banner -loglevel error -f lavfi -i testsrc2=size=1080x2340:rate=60 -t 2             -c:v libx265 -pix_fmt yuv420p -f hevc /tmp/obs-android-adb-test.h265
+          "$FF" -hide_banner -loglevel error -f lavfi -i testsrc2=size=2340x1080:rate=60 -t 1             -c:v libx264 -profile:v baseline -pix_fmt yuv420p -bsf:v h264_mp4toannexb             -f h264 /tmp/obs-android-adb-test-rot.h264
+          ./build/obs-android-adb-tests.exe
+
+      - name: Package artifact
+        run: ./scripts/package-release.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: obs-android-adb-windows-x64
+          path: release/*
+          retention-days: 14
+
   macos:
     name: macOS (arm64) build + offline tests
     runs-on: macos-latest

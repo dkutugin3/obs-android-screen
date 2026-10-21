@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
-# Build the plugin and package distributables for GitHub Releases:
-#   - .dmg (recommended install path; files inside a DMG carry no Gatekeeper
-#     quarantine, so the bundled adb runs without any prompts)
-#   - .zip (same content, for scripted installs)
-#   ./scripts/package-release.sh                          # arm64 .so
-#   ARCHS="arm64;x86_64" ./scripts/package-release.sh     # universal .so
+# Build the plugin and package distributables for GitHub Releases.
+# macOS: .dmg (recommended; no Gatekeeper quarantine inside a DMG) + .zip.
+# Windows (MSYS2/MinGW shell): .zip with the OBS obs-plugins/ + data/ layout.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="$(sed -n 's/^  VERSION \(.*\)$/\1/p' "${ROOT}/CMakeLists.txt" | head -1 | tr -d ' ')"
-ARCHS="${ARCHS:-arm64}"
 BUILD_DIR="${ROOT}/build"
 DIST_DIR="${ROOT}/release"
+
+case "${OSTYPE:-}" in
+msys*|cygwin*|win32*)
+	exec bash "${ROOT}/scripts/package-win.sh" "${VERSION}"
+	;;
+esac
+
+ARCHS="${ARCHS:-arm64}"
 ZIP_NAME="obs-android-adb-${VERSION}-macos-$(echo "${ARCHS}" | tr ';' '+').zip"
 DMG_NAME="obs-android-screen-${VERSION}-macos.dmg"
 

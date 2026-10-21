@@ -4,21 +4,28 @@
 #include <functional>
 #include <vector>
 
-#include <CoreMedia/CMFormatDescription.h>
-#include <VideoToolbox/VTDecompressionSession.h>
-
 #include "scrcpy/protocol.hpp"
 
 namespace video {
 
-// Hardware H.264 / HEVC decoder built directly on VideoToolbox.
-// Input: Annex-B elementary stream (scrcpy wire format).
-// Output: NV12 CVPixelBuffer frames delivered on a VideoToolbox worker thread.
+// A decoded frame in NV12: a Y plane and an interleaved UV plane. The
+// pointers stay valid until the decoder processes the next packet — the
+// buffers are owned by the backend.
+struct DecodedFrame {
+	const uint8_t *y = nullptr;
+	const uint8_t *uv = nullptr;
+	uint32_t yStride = 0;
+	uint32_t uvStride = 0;
+	uint32_t width = 0;
+	uint32_t height = 0;
+};
+
+// H.264 / HEVC decoder over the Annex-B elementary stream (scrcpy wire
+// format). Backends: VideoToolbox (macOS, hardware) and libavcodec
+// (Windows, software). Output: NV12 frames on a decoder worker thread.
 class Decoder {
 public:
-	// Receives a retained CVPixelBuffer (NV12) plus the presentation timestamp
-	// in nanoseconds. Called synchronously from the VT output callback.
-	using OutputFn = std::function<void(CVPixelBufferRef pixelBuffer, uint64_t ptsNs, bool keyFrame)>;
+	using OutputFn = std::function<void(const DecodedFrame &, uint64_t ptsNs, bool keyFrame)>;
 
 	explicit Decoder(OutputFn output, scrcpy::VideoCodecId codec);
 	~Decoder();
@@ -26,39 +33,23 @@ public:
 	Decoder(const Decoder &) = delete;
 	Decoder &operator=(const Decoder &) = delete;
 
-	// Feed a codec config packet (Annex-B parameter sets). Accumulates
-	// SPS/PPS(/VPS) across packets and (re)creates the session once a complete
-	// set is available. Returns false on a fatal setup error.
+	// Feed a codec config packet (Annex-B parameter sets). Returns false on
+	// a fatal setup error.
 	bool feedConfig(const uint8_t *data, size_t len);
 
-	// Submit a media packet. Returns false if it could not be submitted
-	// (decoder not ready yet, or fatal VT error).
-	bool decode(const uint8_t *data, size_t len, uint64_t ptsUs, bool keyFrame);
+	// Submit a media packet (Annex-B access unit). Returns false if it
+	// could not be submitted.
+	bool decode(const uint8_t *data, size_t len, uint64_t ptsNs, bool keyFrame);
 
-	bool ready() const { return session_ != nullptr; }
+	bool ready() const;
 
+	// Drop all pending/delayed frames (called on rotation and reconnect).
 	void flush();
 
-	// Passed as the VT callback refcon.
-	struct OutputContext {
-		OutputFn output;
-	};
+	struct Impl;
 
 private:
-	bool createSession();
-	void destroySession();
-	bool buildFormatDescription();
-
-	OutputFn output_;
-	OutputContext outputCtx_{};
-
-	scrcpy::VideoCodecId codec_ = scrcpy::VideoCodecId::H264;
-	std::vector<uint8_t> sps_, pps_, vps_;
-	bool haveSps_ = false, havePps_ = false, haveVps_ = false;
-
-	CMFormatDescriptionRef formatDesc_ = nullptr;
-	VTDecompressionSessionRef session_ = nullptr;
-	std::vector<uint8_t> avccBuffer_; // Annex B -> length-prefixed scratch
+	Impl *impl_;
 };
 
 } // namespace video

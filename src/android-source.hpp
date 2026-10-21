@@ -8,7 +8,7 @@
 
 #include <obs.h>
 
-#include <CoreVideo/CVPixelBuffer.h>
+#include "video/decoder.hpp"
 
 #include "scrcpy/protocol.hpp"
 #include "scrcpy/server.hpp"
@@ -74,8 +74,9 @@ private:
 	void onAudioDisabled(const std::string &reason);
 	void onEnded(const std::string &error);
 
-	// VideoToolbox output callback
-	void onDecodedFrame(CVPixelBufferRef buffer, uint64_t ptsNs, bool keyFrame);
+	// Decoder output callback (VideoToolbox worker thread on macOS, the
+	// demux thread on Windows/libavcodec)
+	void onDecodedFrame(const video::DecodedFrame &f, uint64_t ptsNs, bool keyFrame);
 	void emitAudio(const uint8_t *pcm, size_t len, uint64_t ptsNs);
 	void allocateFrames(uint32_t w, uint32_t h);
 	uint64_t mapTimestamp(uint64_t ptsNs, bool isAudio);

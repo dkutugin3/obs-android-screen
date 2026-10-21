@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25 FATAL_ERROR)
 
 project(obs-android-adb
-  VERSION 1.3.0
+  VERSION 2.0.0
   DESCRIPTION "Android Screen (ADB) source plugin for OBS Studio — scrcpy protocol over USB"
   LANGUAGES C CXX)
 
@@ -57,9 +57,12 @@ if(NOT EXISTS "${_obs_root}/libobs/obs.h")
 endif()
 
 # libobs headers include <simde/x86/sse2.h> on non-x86 platforms; the simde
-# submodule is not part of the obs-studio release tarball, so fetch it too.
+# submodule is not part of the obs-studio release tarball, so fetch it there.
 set(_simde_root "${_deps_dir}/simde-include")
-if(NOT EXISTS "${_simde_root}/simde/x86/sse2.h")
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64)$")
+  set(_simde_root "") # not needed
+endif()
+if(_simde_root AND NOT EXISTS "${_simde_root}/simde/x86/sse2.h")
   set(_simde_tar "${_deps_dir}/simde.tar.xz")
   if(NOT EXISTS "${_simde_tar}")
     message(STATUS "Downloading simde headers (required by libobs headers on arm64)")
@@ -84,7 +87,7 @@ if(NOT EXISTS "${_simde_root}/simde/x86/sse2.h")
     file(RENAME "${_simde_dir}" "${_simde_root}/simde")
   endif()
 endif()
-if(NOT EXISTS "${_simde_root}/simde/x86/sse2.h")
+if(_simde_root AND NOT EXISTS "${_simde_root}/simde/x86/sse2.h")
   message(FATAL_ERROR "simde headers not found in ${_simde_root}")
 endif()
 
@@ -115,10 +118,19 @@ endif()
 # users. Google ships adb as a universal (x86_64+arm64) Mach-O binary under
 # Apache-2.0. Set BUNDLE_ADB=OFF to rely on a system-installed adb instead.
 # ---------------------------------------------------------------------------
-set(ANDROID_PLATFORM_TOOLS_URL "https://dl.google.com/android/repository/platform-tools-latest-darwin.zip"
+if(WIN32)
+  set(_default_pt_url "https://dl.google.com/android/repository/platform-tools-latest-windows.zip")
+else()
+  set(_default_pt_url "https://dl.google.com/android/repository/platform-tools-latest-darwin.zip")
+endif()
+set(ANDROID_PLATFORM_TOOLS_URL "${_default_pt_url}"
   CACHE STRING "platform-tools zip to take the bundled adb from")
 option(BUNDLE_ADB "Bundle the adb binary inside the plugin" ON)
-set(_adb_src "${_deps_dir}/platform-tools/adb")
+if(WIN32)
+  set(_adb_src "${_deps_dir}/platform-tools/adb.exe")
+else()
+  set(_adb_src "${_deps_dir}/platform-tools/adb")
+endif()
 if(BUNDLE_ADB AND NOT EXISTS "${_adb_src}")
   set(_adb_zip "${_deps_dir}/platform-tools.zip")
   if(NOT EXISTS "${_adb_zip}")
@@ -138,8 +150,45 @@ if(BUNDLE_ADB AND NOT EXISTS "${_adb_src}")
 endif()
 
 # ---------------------------------------------------------------------------
+# Windows: libavcodec (LGPL shared build) for software H.264/HEVC decode
+# ---------------------------------------------------------------------------
+set(FFMPEG_WIN_URL "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-20-13-08/ffmpeg-n8.1.3-18-g46d899d7a0-win64-lgpl-shared-8.1.zip"
+  CACHE STRING "FFmpeg win64 LGPL shared build used for the Windows decoder")
+set(_ff_root "")
+if(WIN32)
+  file(GLOB _ff_dir_hint "${_deps_dir}/ffmpeg-*-win64-lgpl-shared*")
+  if(_ff_dir_hint)
+    list(GET _ff_dir_hint 0 _ff_root)
+  endif()
+  if(NOT EXISTS "${_ff_root}/include/libavcodec/avcodec.h")
+    set(_ff_zip "${_deps_dir}/ffmpeg-win64-lgpl-shared.zip")
+    if(NOT EXISTS "${_ff_zip}")
+      message(STATUS "Downloading FFmpeg (win64 LGPL shared)")
+      file(DOWNLOAD "${FFMPEG_WIN_URL}" "${_ff_zip}" SHOW_PROGRESS STATUS _ff_status)
+      list(GET _ff_status 0 _ff_code)
+      if(NOT _ff_code EQUAL 0)
+        list(GET _ff_status 1 _ff_err)
+        file(REMOVE "${_ff_zip}")
+        message(FATAL_ERROR "Failed to download FFmpeg: ${_ff_err}")
+      endif()
+    endif()
+    file(ARCHIVE_EXTRACT INPUT "${_ff_zip}" DESTINATION "${_deps_dir}")
+    file(GLOB _ff_dir_hint "${_deps_dir}/ffmpeg-*-win64-lgpl-shared*")
+    list(GET _ff_dir_hint 0 _ff_root)
+  endif()
+  if(NOT EXISTS "${_ff_root}/include/libavcodec/avcodec.h")
+    message(FATAL_ERROR "FFmpeg headers not found in ${_ff_root}")
+  endif()
+endif()
+
+# ---------------------------------------------------------------------------
 # Plugin target
 # ---------------------------------------------------------------------------
+set(_decoder_src src/video/decoder-vt.cpp)
+if(WIN32)
+  set(_decoder_src src/video/decoder-ffmpeg.cpp)
+endif()
+
 add_library(${BUNDLE_NAME} MODULE
   src/plugin.cpp
   src/android-source.cpp
@@ -148,7 +197,7 @@ add_library(${BUNDLE_NAME} MODULE
   src/adb/adb-client.cpp
   src/scrcpy/server.cpp
   src/scrcpy/protocol.cpp
-  src/video/decoder.cpp
+  ${_decoder_src}
 )
 
 set_target_properties(${BUNDLE_NAME} PROPERTIES
@@ -160,30 +209,91 @@ set_target_properties(${BUNDLE_NAME} PROPERTIES
 target_include_directories(${BUNDLE_NAME} PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/src"
   "${_obs_root}/libobs"
-  "${_simde_root}"
   "${_generated_dir}")
+if(_simde_root)
+  target_include_directories(${BUNDLE_NAME} PRIVATE "${_simde_root}")
+endif()
+if(WIN32)
+  target_include_directories(${BUNDLE_NAME} PRIVATE "${_ff_root}/include")
+endif()
 
 target_compile_definitions(${BUNDLE_NAME} PRIVATE
   PLUGIN_VERSION="${PROJECT_VERSION}"
   SCRCPY_SERVER_VERSION="${SCRCPY_SERVER_VERSION}"
   SCRCPY_SERVER_FILE="${SCRCPY_SERVER_FILE}")
 
-target_compile_options(${BUNDLE_NAME} PRIVATE
-  -Wall -Wextra
-  -Wno-unused-parameter
-  $<$<CONFIG:Release>:-O2>)
+if(MSVC)
+  target_compile_options(${BUNDLE_NAME} PRIVATE /W4 /permissive-)
+else()
+  target_compile_options(${BUNDLE_NAME} PRIVATE
+    -Wall -Wextra
+    -Wno-unused-parameter
+    $<$<CONFIG:Release>:-O2>)
+  if(MINGW)
+    # Bundle the MinGW runtime DLLs next to the plugin (found in the
+    # toolchain's bin directory).
+    get_filename_component(_cxx_real "${CMAKE_CXX_COMPILER}" REALPATH)
+    get_filename_component(_cxx_dir "${_cxx_real}" DIRECTORY)
+    get_filename_component(_mingw_root "${_cxx_dir}/.." ABSOLUTE)
+    file(GLOB _mingw_rt_dlls
+      "${_cxx_dir}/libgcc_s_seh-1.dll"
+      "${_cxx_dir}/libstdc++-6.dll"
+      "${_cxx_dir}/libwinpthread-1.dll"
+      "${_mingw_root}/x86_64-w64-mingw32/bin/libgcc_s_seh-1.dll"
+      "${_mingw_root}/x86_64-w64-mingw32/bin/libstdc++-6.dll"
+      "${_mingw_root}/x86_64-w64-mingw32/bin/libwinpthread-1.dll"
+      "${_mingw_root}/x86_64-w64-mingw32/lib/libgcc_s_seh-1.dll"
+      "${_mingw_root}/x86_64-w64-mingw32/lib/libstdc++-6.dll"
+      "${_mingw_root}/x86_64-w64-mingw32/lib/libwinpthread-1.dll")
+    set(MINGW_RUNTIME_DLLS ${_mingw_rt_dlls})
+    message(STATUS "mingw runtime dlls: ${MINGW_RUNTIME_DLLS}")
+  endif()
+endif()
 
-# libobs symbols resolve from OBS.app when the plugin is loaded
-target_link_options(${BUNDLE_NAME} PRIVATE
-  "-Wl,-undefined,dynamic_lookup")
+if(WIN32)
+  # libobs import libraries. On Windows the OBS API is split across
+  # obs.dll (obs_* API) and obs64.exe (blog/bmalloc/base — the process
+  # executable re-exports them); plugins import from both.
+  # See third_party/libobs-win/README.md.
+  set(_libobs_lib "${CMAKE_BINARY_DIR}/libobs.lib")
+  set(_obsbase_lib "${CMAKE_BINARY_DIR}/obsbase.lib")
+  if(NOT EXISTS "${_libobs_lib}" OR NOT EXISTS "${_obsbase_lib}")
+    if(MINGW)
+      find_program(DLLTOOL x86_64-w64-mingw32-dlltool dlltool REQUIRED)
+      execute_process(COMMAND ${DLLTOOL} -d "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libobs-win/libobs.def"
+        -l "${_libobs_lib}" -m i386:x86-64 RESULT_VARIABLE _rc1)
+      execute_process(COMMAND ${DLLTOOL} -d "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libobs-win/obs64.def"
+        -l "${_obsbase_lib}" -m i386:x86-64 RESULT_VARIABLE _rc2)
+    else()
+      find_program(LIB_TOOL lib REQUIRED)
+      execute_process(COMMAND ${LIB_TOOL} /machine:x64 /def:"${CMAKE_CURRENT_SOURCE_DIR}/third_party/libobs-win/libobs.def"
+        /out:"${_libobs_lib}" RESULT_VARIABLE _rc1)
+      execute_process(COMMAND ${LIB_TOOL} /machine:x64 /def:"${CMAKE_CURRENT_SOURCE_DIR}/third_party/libobs-win/obs64.def"
+        /out:"${_obsbase_lib}" RESULT_VARIABLE _rc2)
+    endif()
+    if(NOT _rc1 EQUAL 0 OR NOT _rc2 EQUAL 0)
+      message(FATAL_ERROR "could not generate the libobs import libraries from the .def files")
+    endif()
+  endif()
+  target_link_libraries(${BUNDLE_NAME} PRIVATE
+    "${_ff_root}/lib/avcodec.lib"
+    "${_ff_root}/lib/avutil.lib"
+    "${_libobs_lib}"
+    "${_obsbase_lib}"
+    ws2_32 gdi32)
+else()
+  # libobs symbols resolve from OBS.app when the plugin is loaded
+  target_link_options(${BUNDLE_NAME} PRIVATE
+    "-Wl,-undefined,dynamic_lookup")
 
-find_library(CF CoreFoundation REQUIRED)
-find_library(CM CoreMedia REQUIRED)
-find_library(CV CoreVideo REQUIRED)
-find_library(VT VideoToolbox REQUIRED)
-find_library(CT CoreText REQUIRED)
-find_library(CG CoreGraphics REQUIRED)
-target_link_libraries(${BUNDLE_NAME} PRIVATE ${CF} ${CM} ${CV} ${VT} ${CT} ${CG})
+  find_library(CF CoreFoundation REQUIRED)
+  find_library(CM CoreMedia REQUIRED)
+  find_library(CV CoreVideo REQUIRED)
+  find_library(VT VideoToolbox REQUIRED)
+  find_library(CT CoreText REQUIRED)
+  find_library(CG CoreGraphics REQUIRED)
+  target_link_libraries(${BUNDLE_NAME} PRIVATE ${CF} ${CM} ${CV} ${VT} ${CT} ${CG})
+endif()
 
 # ---------------------------------------------------------------------------
 # Offline test harness (no device required)
@@ -195,45 +305,94 @@ if(ENABLE_TESTS)
     src/adb/adb-client.cpp
     src/scrcpy/protocol.cpp
     src/placeholder.cpp
-    src/video/decoder.cpp)
+    ${_decoder_src})
   target_include_directories(obs-android-adb-tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${_obs_root}/libobs"
-    "${_simde_root}"
     "${_generated_dir}")
-  target_compile_options(obs-android-adb-tests PRIVATE -Wno-unused-parameter)
-  target_link_libraries(obs-android-adb-tests PRIVATE ${CF} ${CM} ${CV} ${VT} ${CT} ${CG})
+  if(_simde_root)
+    target_include_directories(obs-android-adb-tests PRIVATE "${_simde_root}")
+  endif()
+  if(WIN32)
+    target_include_directories(obs-android-adb-tests PRIVATE "${_ff_root}/include")
+    target_link_libraries(obs-android-adb-tests PRIVATE
+      "${_ff_root}/lib/avcodec.lib" "${_ff_root}/lib/avutil.lib" ws2_32 gdi32)
+    if(MINGW AND MINGW_RUNTIME_DLLS)
+      # let the test executable run from the build tree
+      add_custom_command(TARGET obs-android-adb-tests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MINGW_RUNTIME_DLLS} $<TARGET_FILE_DIR:obs-android-adb-tests>)
+    endif()
+  else()
+    target_compile_options(obs-android-adb-tests PRIVATE -Wno-unused-parameter)
+    target_link_libraries(obs-android-adb-tests PRIVATE ${CF} ${CM} ${CV} ${VT} ${CT} ${CG})
+  endif()
 endif()
 
 # ---------------------------------------------------------------------------
-# Assemble the macOS plugin bundle
+# Assemble the plugin bundle / distribution layout
 # ---------------------------------------------------------------------------
 configure_file(cmake/Info.plist.in "${CMAKE_BINARY_DIR}/Info.plist" @ONLY)
 
 set(_bundle_adb_commands)
-if(BUNDLE_ADB)
+if(BUNDLE_ADB AND NOT WIN32)
   list(APPEND _bundle_adb_commands
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_adb_src}" "${BUNDLE_CONTENTS}/Resources/adb/adb"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/third_party/adb/NOTICE.txt"
       "${BUNDLE_CONTENTS}/Resources/adb/NOTICE.txt")
 endif()
 
-# A dedicated always-running target so data-file changes are picked up even
-# when the module itself does not need relinking.
-add_custom_target(obs-android-adb-bundle
-  ALL
-  DEPENDS ${BUNDLE_NAME}
-  COMMAND ${CMAKE_COMMAND} -E rm -rf "${BUNDLE_DIR}"
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${BUNDLE_CONTENTS}/MacOS"
-  COMMAND ${CMAKE_COMMAND} -E make_directory "${BUNDLE_CONTENTS}/Resources"
-  COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:${BUNDLE_NAME}>" "${BUNDLE_CONTENTS}/MacOS/${BUNDLE_NAME}.so"
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_BINARY_DIR}/Info.plist" "${BUNDLE_CONTENTS}/Info.plist"
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SCRCPY_SERVER_PATH}" "${BUNDLE_CONTENTS}/Resources/${SCRCPY_SERVER_FILE}"
-  ${_bundle_adb_commands}
-  COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/data" "${BUNDLE_CONTENTS}/Resources"
-  COMMAND codesign --force --sign - --timestamp=none "${BUNDLE_DIR}"
-  COMMAND ${CMAKE_COMMAND} -E echo "Bundle: ${BUNDLE_DIR}"
-  VERBATIM)
+if(WIN32)
+  # OBS Windows layout: <obs>/obs-plugins/64bit/<plugin>.dll + data/obs-plugins/<plugin>/...
+  set(_win_root "${CMAKE_BINARY_DIR}/win-dist")
+  set(_win_dll_dir "${_win_root}/obs-plugins/64bit")
+  set(_win_data_dir "${_win_root}/data/obs-plugins/obs-android-adb")
+  foreach(_rt ${MINGW_RUNTIME_DLLS})
+    list(APPEND _mingw_rt_copy COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_rt}" "${_win_dll_dir}")
+  endforeach()
+  add_custom_target(obs-android-adb-bundle
+    ALL
+    DEPENDS ${BUNDLE_NAME}
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${_win_root}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${_win_dll_dir}"
+    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:${BUNDLE_NAME}>" "${_win_dll_dir}/${BUNDLE_NAME}.dll"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_ff_root}/bin/avcodec-62.dll" "${_win_dll_dir}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_ff_root}/bin/avutil-60.dll" "${_win_dll_dir}"
+    ${_mingw_rt_copy}
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${_win_data_dir}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SCRCPY_SERVER_PATH}"
+      "${_win_data_dir}/${SCRCPY_SERVER_FILE}"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/data/locale"
+      "${_win_data_dir}/locale"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/third_party/adb/NOTICE.txt"
+      "${_win_data_dir}/adb-NOTICE.txt"
+    VERBATIM)
+  # data-dir-relative adb bundle for obs_module_file("adb")
+  set(_win_adb_dir "${_win_data_dir}/adb")
+  add_custom_command(TARGET obs-android-adb-bundle POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${_win_adb_dir}")
+  if(BUNDLE_ADB)
+    add_custom_command(TARGET obs-android-adb-bundle POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_adb_src}" "${_win_adb_dir}/adb.exe"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_deps_dir}/platform-tools/AdbWinApi.dll" "${_win_adb_dir}"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_deps_dir}/platform-tools/AdbWinUsbApi.dll" "${_win_adb_dir}")
+  endif()
+else()
+  # macOS bundle
+  add_custom_target(obs-android-adb-bundle
+    ALL
+    DEPENDS ${BUNDLE_NAME}
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${BUNDLE_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${BUNDLE_CONTENTS}/MacOS"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${BUNDLE_CONTENTS}/Resources"
+    COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:${BUNDLE_NAME}>" "${BUNDLE_CONTENTS}/MacOS/${BUNDLE_NAME}.so"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_BINARY_DIR}/Info.plist" "${BUNDLE_CONTENTS}/Info.plist"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SCRCPY_SERVER_PATH}" "${BUNDLE_CONTENTS}/Resources/${SCRCPY_SERVER_FILE}"
+    ${_bundle_adb_commands}
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/data" "${BUNDLE_CONTENTS}/Resources"
+    COMMAND codesign --force --sign - --timestamp=none "${BUNDLE_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E echo "Bundle: ${BUNDLE_DIR}"
+    VERBATIM)
+endif()
 
 # ---------------------------------------------------------------------------
 # Install into the OBS user plugins directory

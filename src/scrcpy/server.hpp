@@ -1,11 +1,24 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <thread>
 
+#include "adb/adb-client.hpp"
 #include "protocol.hpp"
+
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+using SocketFd = SOCKET;
+inline constexpr SOCKET kInvalidSocket = INVALID_SOCKET;
+#else
+using SocketFd = int;
+inline constexpr int kInvalidSocket = -1;
+#endif
 
 namespace scrcpy {
 
@@ -66,9 +79,9 @@ public:
 
 private:
 	struct Socket {
-		int fd = -1;
+		SocketFd fd = kInvalidSocket;
 
-		bool valid() const { return fd >= 0; }
+		bool valid() const { return fd != kInvalidSocket; }
 		void closeFd();
 		void shutdownBoth();
 	};
@@ -77,11 +90,12 @@ private:
 	bool setupForward(std::string *error);
 	void removeForward();
 	bool spawnServerProcess(std::string *error);
-	bool readFully(int fd, uint8_t *buf, size_t len);
+	bool readFully(SocketFd fd, uint8_t *buf, size_t len);
 
 	void videoThreadFunc();
 	void audioThreadFunc();
 	void controlThreadFunc();
+	void stdoutDrainFunc();
 	void stderrDrainFunc();
 
 	void endSession(const std::string &error);
@@ -96,9 +110,9 @@ private:
 	Socket controlSock_;
 
 	// adb shell process running the scrcpy server
-	pid_t childPid_ = -1;
-	int childStdoutFd_ = -1;
-	int childStderrFd_ = -1;
+	adb::ProcHandle childProc_ = adb::kInvalidProc;
+	adb::PipeHandle childStdout_ = adb::kInvalidPipe;
+	adb::PipeHandle childStderr_ = adb::kInvalidPipe;
 	std::string childError_;
 	std::mutex childMutex_;
 
@@ -109,6 +123,7 @@ private:
 	std::thread audioThread_;
 	std::thread controlThread_;
 	std::thread stderrThread_;
+	std::thread stdoutThread_;
 
 	FILE *dumpFile_ = nullptr;
 };

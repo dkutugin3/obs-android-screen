@@ -12,8 +12,9 @@
 #include <string>
 #include <vector>
 
+#ifndef _WIN32
 #include <CoreFoundation/CoreFoundation.h>
-#include <CoreVideo/CVPixelBuffer.h>
+#endif
 
 #include "adb/adb-client.hpp"
 #include "placeholder.hpp"
@@ -148,7 +149,17 @@ static void testPlaceholder()
 	CHECK(credit > 20);
 }
 
-// --- VideoToolbox decoder over a synthetic stream ---------------------------
+// --- Decoder over a synthetic stream (VideoToolbox on macOS, libavcodec on
+// Windows) ------------------------------------------------------------------
+
+static bool fileReadable(const char *path)
+{
+	FILE *fp = fopen(path, "rb");
+	if (!fp)
+		return false;
+	fclose(fp);
+	return true;
+}
 
 static std::vector<uint8_t> readFile(const char *path)
 {
@@ -225,11 +236,11 @@ static void testDecoderStream(const char *path, scrcpy::VideoCodecId codec, uint
 	std::atomic<int> decodedFrames(0);
 	std::atomic<uint32_t> width(0), height(0);
 	video::Decoder decoder(
-		[&](CVPixelBufferRef pb, uint64_t ptsNs, bool kf) {
+		[&](const video::DecodedFrame &f, uint64_t ptsNs, bool kf) {
 			(void)ptsNs;
 			(void)kf;
-			width = (uint32_t)CVPixelBufferGetWidth(pb);
-			height = (uint32_t)CVPixelBufferGetHeight(pb);
+			width = f.width;
+			height = f.height;
 			decodedFrames++;
 		},
 		codec);
@@ -240,7 +251,7 @@ static void testDecoderStream(const char *path, scrcpy::VideoCodecId codec, uint
 	uint64_t pts = 0;
 	for (auto &au : accessUnits) {
 		decoder.decode(au.data(), au.size(), pts, false);
-		pts += 16667;
+		pts += 16667000; // ns (~60 fps)
 	}
 	decoder.flush();
 
@@ -294,9 +305,9 @@ static void testRotation(const char *portrait, const char *landscape)
 	std::atomic<int> frames(0);
 	std::atomic<uint32_t> lastW(0), lastH(0);
 	video::Decoder dec(
-		[&](CVPixelBufferRef pb, uint64_t, bool) {
-			lastW = (uint32_t)CVPixelBufferGetWidth(pb);
-			lastH = (uint32_t)CVPixelBufferGetHeight(pb);
+		[&](const video::DecodedFrame &f, uint64_t, bool) {
+			lastW = f.width;
+			lastH = f.height;
 			frames++;
 		},
 		scrcpy::VideoCodecId::H264);
@@ -304,7 +315,7 @@ static void testRotation(const char *portrait, const char *landscape)
 	CHECK(dec.feedConfig(a.config.data(), a.config.size()));
 	uint64_t pts = 0;
 	for (auto &au : a.aus)
-		dec.decode(au.data(), au.size(), pts += 16667, false);
+		dec.decode(au.data(), au.size(), pts += 16667000, false);
 	dec.flush();
 	CHECK(frames.load() > 50);
 	CHECK(lastW == 1080 && lastH == 2340);
@@ -313,7 +324,7 @@ static void testRotation(const char *portrait, const char *landscape)
 	CHECK(dec.feedConfig(b.config.data(), b.config.size()));
 	int before = frames.load();
 	for (auto &au : b.aus)
-		dec.decode(au.data(), au.size(), pts += 16667, false);
+		dec.decode(au.data(), au.size(), pts += 16667000, false);
 	dec.flush();
 	CHECK(frames.load() > before + 40);
 	fprintf(stderr, "rotation: %d frames, final size %ux%u\n", frames.load(), lastW.load(), lastH.load());
@@ -329,13 +340,13 @@ int main(int argc, char **argv)
 	const char *h264 = argc > 1 ? argv[1] : "/tmp/obs-android-adb-test.h264";
 	const char *h265 = argc > 2 ? argv[2] : "/tmp/obs-android-adb-test.h265";
 	testDecoderStream(h264, scrcpy::VideoCodecId::H264, 1080, 2340);
-	if (access(h265, R_OK) == 0)
+	if (fileReadable(h265))
 		testDecoderStream(h265, scrcpy::VideoCodecId::H265, 1080, 2340);
 	else
 		fprintf(stderr, "skipping HEVC test (no %s)\n", h265);
 
 	const char *rot = "/tmp/obs-android-adb-test-rot.h264";
-	if (access(rot, R_OK) == 0)
+	if (fileReadable(rot))
 		testRotation(h264, rot);
 	else
 		fprintf(stderr, "skipping rotation test (no %s)\n", rot);

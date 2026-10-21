@@ -1,27 +1,32 @@
 #include "server.hpp"
 
-#include <arpa/inet.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <poll.h>
-#include <signal.h>
-#include <spawn.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <unistd.h>
-
+#include <cerrno>
 #include <chrono>
 #include <cstring>
 #include <mutex>
+#include <random>
 #include <vector>
 
-#include "adb/adb-client.hpp"
 #include <util/base.h>
 
-extern char **environ;
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#define CLOSE_SOCKET closesocket
+typedef int socklen_t_compat;
+#else
+#include <arpa/inet.h>
+#ifndef SD_BOTH
+#define SD_BOTH SHUT_RDWR
+#endif
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <unistd.h>
+#define CLOSE_SOCKET ::close
+#endif
 
 namespace scrcpy {
 
@@ -31,9 +36,14 @@ static constexpr size_t DEVICE_NAME_LENGTH = 64;
 // ---------------------------------------------------------------------------
 // Helpers
 
+static void closeSocketFd(SocketFd fd)
+{
+	CLOSE_SOCKET(fd);
+}
+
 static uint16_t pickFreePort()
 {
-	int fd = socket(AF_INET, SOCK_STREAM, 0);
+	SocketFd fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (fd < 0)
 		return 0;
 	sockaddr_in addr{};
@@ -46,13 +56,13 @@ static uint16_t pickFreePort()
 		if (getsockname(fd, (sockaddr *)&addr, &len) == 0)
 			port = ntohs(addr.sin_port);
 	}
-	close(fd);
+	closeSocketFd(fd);
 	return port;
 }
 
 static int connectTo(uint16_t port)
 {
-	int fd = socket(AF_INET, SOCK_STREAM, 0);
+	SocketFd fd = socket(AF_INET, SOCK_STREAM, 0);
 	if (fd < 0)
 		return -1;
 	sockaddr_in addr{};
@@ -60,11 +70,11 @@ static int connectTo(uint16_t port)
 	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 	addr.sin_port = htons(port);
 	if (connect(fd, (sockaddr *)&addr, sizeof(addr)) != 0) {
-		close(fd);
-		return -1;
+		closeSocketFd(fd);
+		return kInvalidSocket;
 	}
 	int one = 1;
-	setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+	setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const char *)&one, sizeof(one));
 	return fd;
 }
 
@@ -77,28 +87,34 @@ static std::string socketNameForScid(uint32_t scid)
 
 void Server::Socket::closeFd()
 {
-	if (fd >= 0) {
-		::close(fd);
-		fd = -1;
+	if (fd != kInvalidSocket) {
+		CLOSE_SOCKET(fd);
+		fd = kInvalidSocket;
 	}
 }
 
 void Server::Socket::shutdownBoth()
 {
-	if (fd >= 0)
-		::shutdown(fd, SHUT_RDWR);
+	if (fd != kInvalidSocket)
+		::shutdown(fd, SD_BOTH);
 }
 
-bool Server::readFully(int fd, uint8_t *buf, size_t len)
+bool Server::readFully(SocketFd fd, uint8_t *buf, size_t len)
 {
 	size_t got = 0;
 	while (got < len) {
-		ssize_t r = recv(fd, buf + got, len - got, 0);
+		int r = recv(fd, (char *)buf + got, (int)(len - got), 0);
 		if (r == 0)
 			return false; // EOF
 		if (r < 0) {
+#ifdef _WIN32
+			int e = WSAGetLastError();
+			if (e == WSAEINTR || e == WSAEWOULDBLOCK)
+				continue;
+#else
 			if (errno == EINTR)
 				continue;
+#endif
 			return false;
 		}
 		got += (size_t)r;
@@ -201,55 +217,25 @@ bool Server::spawnServerProcess(std::string *error)
 	std::vector<std::string> fullArgs = {"-s", params_.serial};
 	fullArgs.insert(fullArgs.end(), shellArgs.begin(), shellArgs.end());
 
-	int outPipe[2], errPipe[2];
-	if (pipe(outPipe) != 0 || pipe(errPipe) != 0) {
-		*error = "pipe() failed";
+	bool ok = false;
+	adb::PipeHandle errPipe = adb::kInvalidPipe;
+	adb::PipeHandle outPipe = adb::spawn(params_.adbPath, fullArgs, &childProc_, &ok, &errPipe);
+	if (!ok || outPipe == adb::kInvalidPipe) {
+		*error = "could not execute adb: " + params_.adbPath;
 		return false;
 	}
+	childStdout_ = outPipe;
+	childStderr_ = errPipe;
 
-	std::vector<char *> argv;
-	argv.push_back(const_cast<char *>(params_.adbPath.c_str()));
-	for (auto &a : fullArgs)
-		argv.push_back(const_cast<char *>(a.c_str()));
-	argv.push_back(nullptr);
-
-	posix_spawn_file_actions_t actions;
-	posix_spawn_file_actions_init(&actions);
-	posix_spawn_file_actions_adddup2(&actions, outPipe[1], STDOUT_FILENO);
-	posix_spawn_file_actions_adddup2(&actions, errPipe[1], STDERR_FILENO);
-	posix_spawn_file_actions_addclose(&actions, outPipe[0]);
-	posix_spawn_file_actions_addclose(&actions, errPipe[0]);
-	posix_spawn_file_actions_addclose(&actions, outPipe[1]);
-	posix_spawn_file_actions_addclose(&actions, errPipe[1]);
-
-	pid_t pid = -1;
-	int rc = posix_spawn(&pid, argv[0], &actions, nullptr, argv.data(), environ);
-	posix_spawn_file_actions_destroy(&actions);
-	close(outPipe[1]);
-	close(errPipe[1]);
-	if (rc != 0) {
-		close(outPipe[0]);
-		close(errPipe[0]);
-		*error = std::string("could not execute adb: ") + strerror(rc);
-		return false;
-	}
-
-	childPid_ = pid;
-	childStdoutFd_ = outPipe[0];
-	childStderrFd_ = errPipe[0];
-
-	int fl = fcntl(childStdoutFd_, F_GETFL, 0);
-	fcntl(childStdoutFd_, F_SETFL, fl | O_NONBLOCK);
-	fl = fcntl(childStderrFd_, F_GETFL, 0);
-	fcntl(childStderrFd_, F_SETFL, fl | O_NONBLOCK);
-
+	stdoutThread_ = std::thread(&Server::stdoutDrainFunc, this);
 	stderrThread_ = std::thread(&Server::stderrDrainFunc, this);
 	return true;
 }
 
 bool Server::start(std::string *error)
 {
-	scid_ = arc4random() & 0x7fffffff;
+	static std::mt19937 rng(std::random_device{}());
+	scid_ = std::uniform_int_distribution<uint32_t>(0, 0x7fffffff)(rng);
 
 	if (!params_.dumpPath.empty()) {
 		dumpFile_ = fopen(params_.dumpPath.c_str(), "wb");
@@ -277,21 +263,31 @@ bool Server::start(std::string *error)
 	bool ok = false;
 	uint8_t dummy = 0;
 	for (int i = 0; i < 80 && !stopping_; i++) {
-		int fd = connectTo(localPort_);
-		if (fd >= 0) {
+		SocketFd fd = connectTo(localPort_);
+		if (fd != kInvalidSocket) {
+#ifdef _WIN32
+			DWORD rcvTimeoutMs = 1000;
+			setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&rcvTimeoutMs, sizeof(rcvTimeoutMs));
+#else
 			struct timeval tv{};
 			tv.tv_sec = 1;
 			setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-			ssize_t r = recv(fd, &dummy, 1, 0);
+#endif
+			int r = recv(fd, (char *)&dummy, 1, 0);
 			if (r == 1) {
+#ifdef _WIN32
+				DWORD zero = 0;
+				setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&zero, sizeof(zero));
+#else
 				struct timeval zero{};
 				setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &zero, sizeof(zero));
+#endif
 				videoSock_.fd = fd;
 				ok = true;
 				break;
 			}
 			// EOF (tunnel refused) or timeout: the server is not ready yet.
-			close(fd);
+			closeSocketFd(fd);
 		}
 		std::this_thread::sleep_for(std::chrono::milliseconds(250));
 	}
@@ -309,12 +305,12 @@ bool Server::start(std::string *error)
 	// only after all accepts it writes the device metadata — reading the name
 	// earlier deadlocks both sides.
 	if (params_.audio) {
-		int fd = connectTo(localPort_);
-		if (fd < 0) {
+		SocketFd fd = connectTo(localPort_);
+		if (fd == kInvalidSocket) {
 			std::this_thread::sleep_for(std::chrono::milliseconds(500));
 			fd = connectTo(localPort_);
 		}
-		if (fd < 0) {
+		if (fd == kInvalidSocket) {
 			*error = "could not connect the audio socket";
 			removeForward();
 			return false;
@@ -323,12 +319,12 @@ bool Server::start(std::string *error)
 	}
 
 	if (params_.screenOff) {
-		int fd = connectTo(localPort_);
-		if (fd < 0) {
+		SocketFd fd = connectTo(localPort_);
+		if (fd == kInvalidSocket) {
 			std::this_thread::sleep_for(std::chrono::milliseconds(500));
 			fd = connectTo(localPort_);
 		}
-		if (fd < 0) {
+		if (fd == kInvalidSocket) {
 			*error = "could not connect the control socket";
 			removeForward();
 			return false;
@@ -352,7 +348,7 @@ bool Server::start(std::string *error)
 
 	if (params_.screenOff && controlSock_.valid()) {
 		uint8_t msg[2] = {CONTROL_MSG_TYPE_SET_DISPLAY_POWER, 0};
-		ssize_t r = send(controlSock_.fd, msg, 2, 0);
+		int r = send(controlSock_.fd, (const char *)msg, 2, 0);
 		if (r != 2)
 			blog(LOG_WARNING, "[obs-android-adb] could not send screen-off message");
 	}
@@ -385,35 +381,25 @@ void Server::stop()
 		controlThread_.join();
 	if (stderrThread_.joinable())
 		stderrThread_.join();
+	if (stdoutThread_.joinable())
+		stdoutThread_.join();
 
 	videoSock_.closeFd();
 	audioSock_.closeFd();
 	controlSock_.closeFd();
 
-	if (childPid_ > 0) {
-		kill(childPid_, SIGTERM);
-		int status = 0;
-		// small grace period, then hard kill
-		for (int i = 0; i < 20; i++) {
-			if (waitpid(childPid_, &status, WNOHANG) == childPid_) {
-				childPid_ = -1;
-				break;
-			}
-			std::this_thread::sleep_for(std::chrono::milliseconds(50));
-		}
-		if (childPid_ > 0) {
-			kill(childPid_, SIGKILL);
-			waitpid(childPid_, &status, 0);
-			childPid_ = -1;
-		}
+	if (childProc_ != adb::kInvalidProc) {
+		adb::terminateChild(childProc_);
+		adb::reapChild(childProc_);
+		childProc_ = adb::kInvalidProc;
 	}
-	if (childStdoutFd_ >= 0) {
-		close(childStdoutFd_);
-		childStdoutFd_ = -1;
+	if (childStdout_ != adb::kInvalidPipe) {
+		adb::closePipe(childStdout_);
+		childStdout_ = adb::kInvalidPipe;
 	}
-	if (childStderrFd_ >= 0) {
-		close(childStderrFd_);
-		childStderrFd_ = -1;
+	if (childStderr_ != adb::kInvalidPipe) {
+		adb::closePipe(childStderr_);
+		childStderr_ = adb::kInvalidPipe;
 	}
 }
 
@@ -582,77 +568,62 @@ void Server::controlThreadFunc()
 	// messages after the initial screen-off request.
 	uint8_t sink[4096];
 	for (;;) {
-		ssize_t r = recv(controlSock_.fd, sink, sizeof(sink), 0);
+		int r = recv(controlSock_.fd, (char *)sink, (int)sizeof(sink), 0);
 		if (r <= 0) {
+#ifdef _WIN32
+			if (r < 0 && WSAGetLastError() == WSAEINTR)
+				continue;
+#else
 			if (r < 0 && errno == EINTR)
 				continue;
+#endif
 			break;
 		}
 	}
 }
 
+void Server::stdoutDrainFunc()
+{
+	// Keep the adb shell's stdout moving (it is silent in normal operation,
+	// but a stalled pipe would backpressure adb). EOF == the child is gone.
+	uint8_t sink[2048];
+	while (true) {
+		long n = adb::readPipe(childStdout_, sink, sizeof(sink));
+		if (n <= 0)
+			break;
+	}
+}
+
 void Server::stderrDrainFunc()
 {
-	char buf[2048];
-	bool stdoutOpen = childStdoutFd_ >= 0;
-	bool stderrOpen = childStderrFd_ >= 0;
+	// scrcpy-server logs to stderr ("[info] ... [error] ..."); surface the
+	// lines in the OBS log and remember the last one as the likely cause of
+	// a failed bring-up.
 	std::string pending;
-
-	while (stdoutOpen || stderrOpen) {
-		struct pollfd pfds[2];
-		int n = 0;
-		int outIdx = -1, errIdx = -1;
-		if (stdoutOpen) {
-			outIdx = n;
-			pfds[n].fd = childStdoutFd_;
-			pfds[n].events = POLLIN;
-			pfds[n].revents = 0;
-			n++;
-		}
-		if (stderrOpen) {
-			errIdx = n;
-			pfds[n].fd = childStderrFd_;
-			pfds[n].events = POLLIN;
-			pfds[n].revents = 0;
-			n++;
-		}
-		int r = poll(pfds, (nfds_t)n, 1000);
-		if (r < 0) {
-			if (errno == EINTR)
-				continue;
+	uint8_t chunk[2048];
+	while (true) {
+		long n = adb::readPipe(childStderr_, chunk, sizeof(chunk));
+		if (n <= 0)
 			break;
+		pending.append((const char *)chunk, (size_t)n);
+
+		size_t lineStart = 0;
+		size_t nl;
+		while ((nl = pending.find('\n', lineStart)) != std::string::npos) {
+			std::string line = pending.substr(lineStart, nl - lineStart);
+			lineStart = nl + 1;
+			if (!line.empty() && line.back() == '\r')
+				line.pop_back();
+			if (line.empty() || line.find("DEBUG") != std::string::npos)
+				continue;
+			int level = line.find("ERROR") != std::string::npos
+				? LOG_ERROR
+				: (line.find("WARN") != std::string::npos ? LOG_WARNING : LOG_INFO);
+			blog(level, "%s", line.c_str());
+			std::lock_guard<std::mutex> lock(childMutex_);
+			childError_ = line;
 		}
-		if (r == 0)
-			continue;
-		auto slurp = [&](int idx, int fd, bool &open) {
-			if (idx >= 0 && (pfds[idx].revents & (POLLIN | POLLHUP))) {
-				ssize_t got = read(fd, buf, sizeof(buf));
-				if (got > 0) {
-					pending.append(buf, (size_t)got);
-					size_t lineStart = 0;
-					size_t nl;
-					while ((nl = pending.find('\n', lineStart)) != std::string::npos) {
-						std::string line = pending.substr(lineStart, nl - lineStart);
-						lineStart = nl + 1;
-						if (!line.empty() && line.back() == '\r')
-							line.pop_back();
-						if (line.empty() || line.find("DEBUG") != std::string::npos)
-							continue;
-						int level = line.find("ERROR") != std::string::npos
-							? LOG_ERROR
-							: (line.find("WARN") != std::string::npos ? LOG_WARNING : LOG_INFO);
-						blog(level, "%s", line.c_str());
-						std::lock_guard<std::mutex> lock(childMutex_);
-						childError_ = line;
-					}
-					pending.erase(0, lineStart);
-				} else {
-					open = false;
-				}
-			}
-		};
-		slurp(outIdx, childStdoutFd_, stdoutOpen);
-		slurp(errIdx, childStderrFd_, stderrOpen);
+		pending.erase(0, lineStart);
 	}
 }
 

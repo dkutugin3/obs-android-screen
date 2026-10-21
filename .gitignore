@@ -14,3 +14,4 @@ third_party/obs-plugintemplate/
 *.log
 
 release/
+build-win/

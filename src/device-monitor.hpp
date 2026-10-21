@@ -2,14 +2,13 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
-
-#include <sys/types.h>
 
 #include "adb/adb-client.hpp"
 
@@ -70,5 +69,5 @@ private:
 	std::thread thread_;
 	std::condition_variable cv_;
 	bool threadRunning_ = false;
-	std::atomic<pid_t> trackerPid_{-1};
+	std::atomic<uintptr_t> trackerProc_{0}; // adb::ProcHandle, 0 = none
 };

@@ -1,9 +1,10 @@
 # obs-android-screen — Android Screen (ADB) for OBS Studio
 
-A native OBS Studio source plugin for macOS (Apple Silicon) that mirrors an
-Android phone — video **and system audio** — into OBS over a plain USB-C cable,
-using the official [scrcpy](https://github.com/Genymobile/scrcpy) server and
-wire protocol over ADB.
+A native OBS Studio source plugin for **macOS (Apple Silicon/Intel)** and
+**Windows (x64)** that mirrors an Android phone — video **and system audio** —
+into OBS over a plain USB-C cable, using the official
+[scrcpy](https://github.com/Genymobile/scrcpy) server and wire protocol over
+ADB.
 
 No Window Capture. No macOS Screen Capture. No scrcpy GUI window. No virtual
 camera. No HDMI capture card. No AirPlay. No macOS *Screen Recording*
@@ -27,7 +28,7 @@ of the scrcpy protocol exactly as `app/src/demuxer.c` in scrcpy does.
 
 | Component | Version |
 |---|---|
-| macOS | 15+ (Sequoia), Apple Silicon (arm64) |
+| macOS | 13+ (Apple Silicon; Intel works when built universal) — **or** Windows 10/11 x64 |
 | OBS Studio | 30.0+ (tested with 32.2.2) |
 | Android device | Android 11+ for audio; any scrcpy-supported Android for video (**live-tested**: Galaxy S26-class SM-S942B / Android 16) |
 | On the phone | Developer options → USB debugging enabled |
@@ -77,10 +78,16 @@ ffmpeg -f lavfi -i testsrc2=size=2340x1080:rate=60 -t 1 -c:v libx264 \
 
 ### From a release (recommended)
 
-1. Download the latest `obs-android-screen-<version>-macos.dmg` from
-   [Releases](../../releases) (a `.zip` with the same content is also
-   attached). Inside the archive is `obs-android-adb.plugin` and an
-   `INSTALL.txt` with these steps.
+**Windows:** download `obs-android-screen-<version>-windows-x64.zip`,
+quit OBS, and copy the `obs-plugins` and `data` folders from the archive
+into `%APPDATA%\obs-studio\` (merge with existing folders — step-by-step
+`INSTALL.txt` is inside the zip). Windows SmartScreen may warn about the
+unsigned DLL ("More info" → "Run anyway" applies to plugins too — see
+Troubleshooting).
+
+**macOS:** download the latest `obs-android-screen-<version>-macos.dmg` (a
+`.zip` with the same content is also attached). Inside the archive is
+`obs-android-adb.plugin` and an `INSTALL.txt` with these steps.
 2. Quit OBS Studio, then copy `obs-android-adb.plugin` to
    `~/Library/Application Support/obs-studio/plugins/` (create the `plugins`
    folder if needed).
@@ -177,6 +184,17 @@ plugin receives (before decoding):
 OBS_ANDROID_ADB_DUMP=/tmp/android.h264 open -a OBS
 # reproduce, then:  ffplay /tmp/android.h264
 ```
+
+## Platform notes
+
+- **Windows**: video decoding uses bundled libavcodec (FFmpeg, LGPL-2.1)
+  DLLs — H.264 **and** HEVC work on any Windows 10/11 without OS codec
+  extensions. If the phone does not appear, Windows may need the [Google USB
+  Driver](https://developer.android.com/studio/run/win-usb) installed once
+  (common on OEM cables/phones); modern adb usually works out of the box.
+  SmartScreen may complain about the plugin DLLs because they are unsigned —
+  this is normal for community OBS plugins.
+- **macOS**: decoding runs on the VideoToolbox hardware decoder.
 
 ## Troubleshooting
 

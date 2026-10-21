@@ -1,5 +1,21 @@
 #include "adb-client.hpp"
 
+#include <chrono>
+#include <cstring>
+#include <mutex>
+
+#include <util/base.h>
+
+#ifndef _WIN32
+extern char **environ;
+#endif
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#include <algorithm>
+#else
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -10,19 +26,234 @@
 #include <sys/xattr.h>
 #include <sys/wait.h>
 #include <unistd.h>
-
-#include <chrono>
-#include <cstring>
-#include <mutex>
-
-#include <util/base.h>
-
 extern char **environ;
+#endif
 
 namespace adb {
 
 // ---------------------------------------------------------------------------
-// Process spawning
+// Platform process layer
+
+#ifdef _WIN32
+
+namespace {
+
+std::wstring toWide(const std::string &s)
+{
+	if (s.empty())
+		return {};
+	int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0);
+	std::wstring w((size_t)n, L'\0');
+	MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), &w[0], n);
+	return w;
+}
+
+// Build a Windows command line: every argument containing whitespace is
+// double-quoted (backslash quoting rules do not matter for adb arguments).
+std::wstring buildCommandLine(const std::string &adb, const std::vector<std::string> &args)
+{
+	std::string line;
+	auto append = [&](const std::string &a) {
+		if (!line.empty())
+			line += ' ';
+		bool quote = a.find_first_of(" \t") != std::string::npos;
+		if (quote)
+			line += '"';
+		line += a;
+		if (quote)
+			line += '"';
+	};
+	append(adb);
+	for (auto &a : args)
+		append(a);
+	return toWide(line);
+}
+
+struct WinPipes {
+	HANDLE outRd = nullptr, outWr = nullptr;
+	HANDLE errRd = nullptr, errWr = nullptr;
+	~WinPipes()
+	{
+		for (HANDLE h : {outRd, outWr, errRd, errWr})
+			if (h)
+				CloseHandle(h);
+	}
+};
+
+} // namespace
+
+int run(const std::string &adb, const std::vector<std::string> &args, std::string *stdoutOut, std::string *stderrOut,
+	long timeoutMs)
+{
+	if (adb.empty())
+		return -1;
+
+	WinPipes pipes;
+	SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
+	if (!CreatePipe(&pipes.outRd, &pipes.outWr, &sa, 0) || !CreatePipe(&pipes.errRd, &pipes.errWr, &sa, 0))
+		return -1;
+	SetHandleInformation(pipes.outRd, HANDLE_FLAG_INHERIT, 0);
+	SetHandleInformation(pipes.errRd, HANDLE_FLAG_INHERIT, 0);
+
+	STARTUPINFOW si{};
+	si.cb = sizeof(si);
+	si.dwFlags = STARTF_USESTDHANDLES;
+	si.hStdOutput = pipes.outWr;
+	si.hStdError = pipes.errWr;
+	si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+
+	PROCESS_INFORMATION pi{};
+	std::wstring cmd = buildCommandLine(adb, args);
+	if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+		blog(LOG_WARNING, "[obs-android-adb] CreateProcess failed for %s (%lu)", adb.c_str(), GetLastError());
+		return -1;
+	}
+	CloseHandle(pi.hThread);
+	// The child owns its ends now.
+	CloseHandle(pipes.outWr);
+	pipes.outWr = nullptr;
+	CloseHandle(pipes.errWr);
+	pipes.errWr = nullptr;
+
+	std::string outStr, errStr;
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs > 0 ? timeoutMs : 60000);
+	char buf[4096];
+	bool outOpen = true, errOpen = true;
+
+	while (outOpen || errOpen) {
+		long remainingMs = timeoutMs > 0
+			? (long)std::chrono::duration_cast<std::chrono::milliseconds>(
+				  deadline - std::chrono::steady_clock::now())
+				  .count()
+			: 100;
+		if (remainingMs < 1)
+			remainingMs = 1;
+		WaitForSingleObject(pi.hProcess, (DWORD)remainingMs);
+
+		auto drain = [](HANDLE h, bool &open, std::string &out) {
+			if (!open)
+				return;
+			DWORD avail = 0;
+			if (!PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr)) {
+				open = false; // all write ends closed = end of stream
+				return;
+			}
+			if (avail == 0)
+				return;
+			char b[4096];
+			DWORD toRead = avail < sizeof(b) ? avail : (DWORD)sizeof(b);
+			DWORD got = 0;
+			if (ReadFile(h, b, toRead, &got, nullptr) && got > 0)
+				out.append(b, (size_t)got);
+			else
+				open = false;
+		};
+		drain(pipes.outRd, outOpen, outStr);
+		drain(pipes.errRd, errOpen, errStr);
+
+		if (timeoutMs > 0 && std::chrono::steady_clock::now() >= deadline) {
+			TerminateProcess(pi.hProcess, 1);
+			break;
+		}
+	}
+
+	DWORD exitCode = 0;
+	GetExitCodeProcess(pi.hProcess, &exitCode);
+	CloseHandle(pi.hProcess);
+
+	if (stdoutOut)
+		*stdoutOut = std::move(outStr);
+	if (stderrOut)
+		*stderrOut = std::move(errStr);
+	return (int)exitCode;
+}
+
+PipeHandle spawn(const std::string &adb, const std::vector<std::string> &args, ProcHandle *procOut, bool *ok,
+	PipeHandle *stderrPipe)
+{
+	if (ok)
+		*ok = false;
+	if (adb.empty())
+		return nullptr;
+
+	SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
+	HANDLE rd = nullptr, wr = nullptr;
+	if (!CreatePipe(&rd, &wr, &sa, 0)) {
+		blog(LOG_WARNING, "[obs-android-adb] CreatePipe failed (%lu)", GetLastError());
+		return nullptr;
+	}
+	SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+
+	HANDLE errRd = nullptr, errWr = nullptr;
+	if (stderrPipe && CreatePipe(&errRd, &errWr, &sa, 0)) {
+		SetHandleInformation(errRd, HANDLE_FLAG_INHERIT, 0);
+	} else {
+		errRd = nullptr;
+		errWr = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr);
+	}
+
+	STARTUPINFOW si{};
+	si.cb = sizeof(si);
+	si.dwFlags = STARTF_USESTDHANDLES;
+	si.hStdOutput = wr;
+	si.hStdError = errWr;
+
+	PROCESS_INFORMATION pi{};
+	std::wstring cmd = buildCommandLine(adb, args);
+	if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+		blog(LOG_WARNING, "[obs-android-adb] CreateProcess failed for %s (%lu)", adb.c_str(), GetLastError());
+		CloseHandle(errWr);
+		if (errRd)
+			CloseHandle(errRd);
+		CloseHandle(rd);
+		CloseHandle(wr);
+		return nullptr;
+	}
+	CloseHandle(pi.hThread);
+	CloseHandle(wr);
+	CloseHandle(errWr);
+	if (stderrPipe)
+		*stderrPipe = errRd;
+	else if (errRd)
+		CloseHandle(errRd);
+	if (procOut)
+		*procOut = pi.hProcess;
+	if (ok)
+		*ok = true;
+	return rd;
+}
+
+long readPipe(PipeHandle pipe, uint8_t *buf, size_t len)
+{
+	if (!pipe)
+		return -1;
+	DWORD got = 0;
+	if (!ReadFile((HANDLE)pipe, buf, (DWORD)len, &got, nullptr))
+		return GetLastError() == ERROR_BROKEN_PIPE ? 0 : -1;
+	return (long)got;
+}
+
+void closePipe(PipeHandle pipe)
+{
+	if (pipe)
+		CloseHandle((HANDLE)pipe);
+}
+
+void terminateChild(ProcHandle proc)
+{
+	if (proc)
+		TerminateProcess((HANDLE)proc, 1);
+}
+
+void reapChild(ProcHandle proc)
+{
+	if (proc) {
+		WaitForSingleObject((HANDLE)proc, 5000);
+		CloseHandle((HANDLE)proc);
+	}
+}
+
+#else // POSIX
 
 namespace {
 
@@ -168,8 +399,11 @@ int run(const std::string &adb, const std::vector<std::string> &args, std::strin
 	return -1;
 }
 
-int spawn(const std::string &adb, const std::vector<std::string> &args, pid_t *pidOut)
+PipeHandle spawn(const std::string &adb, const std::vector<std::string> &args, ProcHandle *procOut, bool *ok,
+	PipeHandle *stderrPipe)
 {
+	if (ok)
+		*ok = false;
 	if (adb.empty())
 		return -1;
 
@@ -184,13 +418,23 @@ int spawn(const std::string &adb, const std::vector<std::string> &args, pid_t *p
 	if (pipe(outPipe) != 0)
 		return -1;
 
+	int errPipe[2] = {-1, -1};
+	bool wantStderr = stderrPipe != nullptr;
+	if (wantStderr && pipe(errPipe) != 0)
+		wantStderr = false;
+
 	int devnull = open("/dev/null", O_WRONLY);
 	posix_spawn_file_actions_t actions;
 	posix_spawn_file_actions_init(&actions);
 	posix_spawn_file_actions_adddup2(&actions, outPipe[1], STDOUT_FILENO);
-	posix_spawn_file_actions_adddup2(&actions, devnull >= 0 ? devnull : outPipe[1], STDERR_FILENO);
+	if (wantStderr)
+		posix_spawn_file_actions_adddup2(&actions, errPipe[1], STDERR_FILENO);
+	else
+		posix_spawn_file_actions_adddup2(&actions, devnull >= 0 ? devnull : outPipe[1], STDERR_FILENO);
 	posix_spawn_file_actions_addclose(&actions, outPipe[0]);
 	posix_spawn_file_actions_addclose(&actions, outPipe[1]);
+	if (wantStderr)
+		posix_spawn_file_actions_addclose(&actions, errPipe[0]);
 
 	// Never let SIGPIPE from a dead adb peer kill OBS
 	sigset_t mask, oldmask;
@@ -206,20 +450,99 @@ int spawn(const std::string &adb, const std::vector<std::string> &args, pid_t *p
 	if (devnull >= 0)
 		close(devnull);
 	close(outPipe[1]);
+	if (wantStderr)
+		close(errPipe[1]);
 
 	if (rc != 0) {
 		close(outPipe[0]);
+		if (wantStderr)
+			close(errPipe[0]);
 		blog(LOG_WARNING, "[obs-android-adb] posix_spawn failed for %s: %s", adb.c_str(), strerror(rc));
 		return -1;
 	}
 
-	if (pidOut)
-		*pidOut = pid;
+	if (procOut)
+		*procOut = pid;
+	if (stderrPipe)
+		*stderrPipe = wantStderr ? errPipe[0] : -1;
+	if (ok)
+		*ok = true;
 	return outPipe[0];
 }
 
+long readPipe(PipeHandle pipe, uint8_t *buf, size_t len)
+{
+	while (true) {
+		ssize_t got = read(pipe, buf, len);
+		if (got < 0 && errno == EINTR)
+			continue;
+		return (long)got;
+	}
+}
+
+void closePipe(PipeHandle pipe)
+{
+	close(pipe);
+}
+
+void terminateChild(ProcHandle proc)
+{
+	kill(proc, SIGTERM);
+}
+
+void reapChild(ProcHandle proc)
+{
+	waitpid(proc, nullptr, 0);
+}
+
+#endif // process layer
+
 // ---------------------------------------------------------------------------
 // adb discovery
+
+#ifdef _WIN32
+
+static bool isExecutableFile(const std::string &path)
+{
+	if (path.empty())
+		return false;
+	DWORD attr = GetFileAttributesA(path.c_str());
+	return attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+static std::string findInPath(const char *name)
+{
+	char buf[MAX_PATH];
+	if (SearchPathA(nullptr, name, ".exe", MAX_PATH, buf, nullptr))
+		return std::string(buf);
+	return {};
+}
+
+std::string findAdb(const std::string &overridePath)
+{
+	if (!overridePath.empty() && isExecutableFile(overridePath))
+		return overridePath;
+
+	// Bundled copy (data/adb/adb.exe) — preferred so the plugin works
+	// without platform-tools.
+	const char *dataPath = getenv("OBS_ANDROID_ADB_BUNDLE_DIR");
+	if (dataPath) {
+		std::string bundled = std::string(dataPath) + "\\adb.exe";
+		if (isExecutableFile(bundled))
+			return bundled;
+	}
+
+	// Typical Android SDK / Studio location.
+	const char *localAppData = getenv("LOCALAPPDATA");
+	if (localAppData) {
+		std::string sdk = std::string(localAppData) + "\\Android\\Sdk\\platform-tools\\adb.exe";
+		if (isExecutableFile(sdk))
+			return sdk;
+	}
+	return findInPath("adb.exe");
+}
+
+#else
 
 static bool isExecutableFile(const std::string &path)
 {
@@ -277,8 +600,10 @@ std::string findAdb(const std::string &overridePath)
 	return findInPath("adb");
 }
 
+#endif
+
 // ---------------------------------------------------------------------------
-// Device list parsing
+// Device list parsing (pure string handling — shared)
 
 static void trimInPlace(std::string &s)
 {

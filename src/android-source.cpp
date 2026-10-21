@@ -394,21 +394,21 @@ void AndroidSource::onVideoConfig(const uint8_t *data, size_t len)
 {
 	if (!decoder_) {
 		decoder_ = std::make_unique<video::Decoder>(
-			[this](CVPixelBufferRef buffer, uint64_t ptsNs, bool keyFrame) {
-				onDecodedFrame(buffer, ptsNs, keyFrame);
+			[this](const video::DecodedFrame &f, uint64_t ptsNs, bool keyFrame) {
+				onDecodedFrame(f, ptsNs, keyFrame);
 			},
 			videoCodecId_);
 	}
 	if (!decoder_->feedConfig(data, len)) {
 		blog(LOG_ERROR, LOGP "decoder initialization failed (config data rejected)");
-		setStatus(Status::Error, "Decoder initialization failed (VideoToolbox).");
+		setStatus(Status::Error, "Decoder initialization failed.");
 	}
 }
 
 void AndroidSource::onVideoPacket(const uint8_t *data, size_t len, uint64_t ptsUs, bool keyFrame)
 {
 	if (decoder_)
-		decoder_->decode(data, len, ptsUs, keyFrame);
+		decoder_->decode(data, len, ptsUs * 1000, keyFrame);
 }
 
 void AndroidSource::onAudioPacket(const uint8_t *pcm, size_t len, uint64_t ptsUs)
@@ -488,17 +488,16 @@ uint64_t AndroidSource::mapTimestamp(uint64_t ptsNs, bool isAudio)
 	return (uint64_t)ts;
 }
 
-void AndroidSource::onDecodedFrame(CVPixelBufferRef buffer, uint64_t ptsNs, bool keyFrame)
+void AndroidSource::onDecodedFrame(const video::DecodedFrame &dec, uint64_t ptsNs, bool keyFrame)
 {
 	(void)keyFrame;
 
-	CVPixelBufferLockBaseAddress(buffer, 0);
-	void *yBase = CVPixelBufferGetBaseAddressOfPlane(buffer, 0);
-	void *uvBase = CVPixelBufferGetBaseAddressOfPlane(buffer, 1);
-	size_t yStride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0);
-	size_t uvStride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 1);
-	uint32_t w = (uint32_t)CVPixelBufferGetWidth(buffer);
-	uint32_t h = (uint32_t)CVPixelBufferGetHeight(buffer);
+	const uint8_t *yBase = dec.y;
+	const uint8_t *uvBase = dec.uv;
+	size_t yStride = dec.yStride;
+	size_t uvStride = dec.uvStride;
+	uint32_t w = dec.width;
+	uint32_t h = dec.height;
 
 	if (yBase && uvBase) {
 		std::lock_guard<std::mutex> lock(frameMutex_);
@@ -545,8 +544,6 @@ void AndroidSource::onDecodedFrame(CVPixelBufferRef buffer, uint64_t ptsNs, bool
 
 		obs_source_output_video(source_, &frame);
 	}
-
-	CVPixelBufferUnlockBaseAddress(buffer, 0);
 }
 
 void AndroidSource::emitAudio(const uint8_t *pcm, size_t len, uint64_t ptsNs)
