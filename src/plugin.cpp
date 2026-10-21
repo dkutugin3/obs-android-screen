@@ -133,6 +133,14 @@ bool obs_module_load(void)
 
 	// Bundled adb (built with BUNDLE_ADB=ON): Resources/adb/adb. Makes the
 	// plugin work out of the box without platform-tools installed.
+	char *ffDir = obs_module_file("ffmpeg");
+	if (ffDir) {
+#ifdef _WIN32
+		_putenv_s("OBS_ANDROID_FFMPEG_DIR", ffDir);
+#endif
+		bfree(ffDir);
+	}
+
 	char *adbDir = obs_module_file("adb");
 	if (adbDir) {
 #ifdef _WIN32

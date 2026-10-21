@@ -3535,11 +3535,6 @@ EXPORTS
   profiler_snapshot_dump_csv_gz
   profiler_start
   profiler_stop
-  pthread_mutex_destroy
-  pthread_mutex_init
-  pthread_mutex_lock
-  pthread_mutex_unlock
-  pthread_once
   qVersion
   rand_float
   round

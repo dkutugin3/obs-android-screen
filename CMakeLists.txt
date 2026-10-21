@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25 FATAL_ERROR)
 
 project(obs-android-adb
-  VERSION 2.0.0
+  VERSION 2.0.1
   DESCRIPTION "Android Screen (ADB) source plugin for OBS Studio — scrcpy protocol over USB"
   LANGUAGES C CXX)
 
@@ -185,8 +185,10 @@ endif()
 # Plugin target
 # ---------------------------------------------------------------------------
 set(_decoder_src src/video/decoder-vt.cpp)
+set(_ff_loader_src)
 if(WIN32)
   set(_decoder_src src/video/decoder-ffmpeg.cpp)
+  set(_ff_loader_src src/video/ffmpeg-loader.cpp)
 endif()
 
 add_library(${BUNDLE_NAME} MODULE
@@ -198,6 +200,7 @@ add_library(${BUNDLE_NAME} MODULE
   src/scrcpy/server.cpp
   src/scrcpy/protocol.cpp
   ${_decoder_src}
+  ${_ff_loader_src}
 )
 
 set_target_properties(${BUNDLE_NAME} PROPERTIES
@@ -230,23 +233,10 @@ else()
     -Wno-unused-parameter
     $<$<CONFIG:Release>:-O2>)
   if(MINGW)
-    # Bundle the MinGW runtime DLLs next to the plugin (found in the
-    # toolchain's bin directory).
-    get_filename_component(_cxx_real "${CMAKE_CXX_COMPILER}" REALPATH)
-    get_filename_component(_cxx_dir "${_cxx_real}" DIRECTORY)
-    get_filename_component(_mingw_root "${_cxx_dir}/.." ABSOLUTE)
-    file(GLOB _mingw_rt_dlls
-      "${_cxx_dir}/libgcc_s_seh-1.dll"
-      "${_cxx_dir}/libstdc++-6.dll"
-      "${_cxx_dir}/libwinpthread-1.dll"
-      "${_mingw_root}/x86_64-w64-mingw32/bin/libgcc_s_seh-1.dll"
-      "${_mingw_root}/x86_64-w64-mingw32/bin/libstdc++-6.dll"
-      "${_mingw_root}/x86_64-w64-mingw32/bin/libwinpthread-1.dll"
-      "${_mingw_root}/x86_64-w64-mingw32/lib/libgcc_s_seh-1.dll"
-      "${_mingw_root}/x86_64-w64-mingw32/lib/libstdc++-6.dll"
-      "${_mingw_root}/x86_64-w64-mingw32/lib/libwinpthread-1.dll")
-    set(MINGW_RUNTIME_DLLS ${_mingw_rt_dlls})
-    message(STATUS "mingw runtime dlls: ${MINGW_RUNTIME_DLLS}")
+    # Fully static MinGW runtime: the plugin DLL must not depend on
+    # libgcc/libstdc++/libwinpthread, which Windows would not find next to
+    # the plugin anyway (the loader never searches the plugin's directory).
+    target_link_options(${BUNDLE_NAME} PRIVATE -static-libgcc -static-libstdc++ -static)
   endif()
 endif()
 
@@ -276,8 +266,6 @@ if(WIN32)
     endif()
   endif()
   target_link_libraries(${BUNDLE_NAME} PRIVATE
-    "${_ff_root}/lib/avcodec.lib"
-    "${_ff_root}/lib/avutil.lib"
     "${_libobs_lib}"
     "${_obsbase_lib}"
     ws2_32 gdi32)
@@ -305,7 +293,8 @@ if(ENABLE_TESTS)
     src/adb/adb-client.cpp
     src/scrcpy/protocol.cpp
     src/placeholder.cpp
-    ${_decoder_src})
+    ${_decoder_src}
+    ${_ff_loader_src})
   target_include_directories(obs-android-adb-tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${_obs_root}/libobs"
@@ -315,18 +304,16 @@ if(ENABLE_TESTS)
   endif()
   if(WIN32)
     target_include_directories(obs-android-adb-tests PRIVATE "${_ff_root}/include")
-    target_link_libraries(obs-android-adb-tests PRIVATE
-      "${_ff_root}/lib/avcodec.lib" "${_ff_root}/lib/avutil.lib" ws2_32 gdi32)
+    target_link_libraries(obs-android-adb-tests PRIVATE ws2_32 gdi32)
     if(MINGW)
-      # Let the test executable run from the build tree: its DLL
-      # dependencies must sit next to it.
-      set(_tests_deps ${MINGW_RUNTIME_DLLS}
-        "${_ff_root}/bin/avcodec-62.dll"
-        "${_ff_root}/bin/avutil-60.dll"
-        "${_ff_root}/bin/swresample-6.dll")
-      add_custom_command(TARGET obs-android-adb-tests POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_tests_deps} $<TARGET_FILE_DIR:obs-android-adb-tests>)
+      target_link_options(obs-android-adb-tests PRIVATE -static-libgcc -static-libstdc++ -static)
     endif()
+    # The runtime loader finds the ffmpeg DLLs in <exe-dir>/ffmpeg.
+    add_custom_command(TARGET obs-android-adb-tests POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:obs-android-adb-tests>/ffmpeg"
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_ff_root}/bin/avcodec-62.dll"
+        "${_ff_root}/bin/avutil-60.dll" "${_ff_root}/bin/swresample-6.dll"
+        "$<TARGET_FILE_DIR:obs-android-adb-tests>/ffmpeg")
   else()
     target_compile_options(obs-android-adb-tests PRIVATE -Wno-unused-parameter)
     target_link_libraries(obs-android-adb-tests PRIVATE ${CF} ${CM} ${CV} ${VT} ${CT} ${CG})
@@ -351,20 +338,17 @@ if(WIN32)
   set(_win_root "${CMAKE_BINARY_DIR}/win-dist")
   set(_win_dll_dir "${_win_root}/obs-plugins/64bit")
   set(_win_data_dir "${_win_root}/data/obs-plugins/obs-android-adb")
-  foreach(_rt ${MINGW_RUNTIME_DLLS})
-    list(APPEND _mingw_rt_copy COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_rt}" "${_win_dll_dir}")
-  endforeach()
   add_custom_target(obs-android-adb-bundle
     ALL
     DEPENDS ${BUNDLE_NAME}
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${_win_root}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_win_dll_dir}"
     COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:${BUNDLE_NAME}>" "${_win_dll_dir}/${BUNDLE_NAME}.dll"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_ff_root}/bin/avcodec-62.dll" "${_win_dll_dir}"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_ff_root}/bin/avutil-60.dll" "${_win_dll_dir}"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_ff_root}/bin/swresample-6.dll" "${_win_dll_dir}"
-    ${_mingw_rt_copy}
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_win_data_dir}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${_win_data_dir}/ffmpeg"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_ff_root}/bin/avcodec-62.dll" "${_win_data_dir}/ffmpeg"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_ff_root}/bin/avutil-60.dll" "${_win_data_dir}/ffmpeg"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_ff_root}/bin/swresample-6.dll" "${_win_data_dir}/ffmpeg"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SCRCPY_SERVER_PATH}"
       "${_win_data_dir}/${SCRCPY_SERVER_FILE}"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/data/locale"

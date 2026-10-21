@@ -18,6 +18,10 @@ extern "C" {
 #include <libavutil/pixfmt.h>
 }
 
+#ifdef _WIN32
+#include "ffmpeg-syms.hpp" // av*/avcodec* -> runtime-resolved pointers
+#endif
+
 #include <util/base.h>
 
 namespace video {
@@ -46,6 +50,11 @@ struct Decoder::Impl {
 
 	Impl(OutputFn out, scrcpy::VideoCodecId c) : output(std::move(out)), codec(c)
 	{
+		std::string ffErr;
+		if (!ff::load(&ffErr)) {
+			blog(LOG_ERROR, "[obs-android-adb] ffmpeg unavailable: %s", ffErr.c_str());
+			return;
+		}
 		av_log_set_level(AV_LOG_ERROR);
 		AVCodecID id = c == scrcpy::VideoCodecId::H265 ? AV_CODEC_ID_HEVC : AV_CODEC_ID_H264;
 		decoder = avcodec_find_decoder(id);
