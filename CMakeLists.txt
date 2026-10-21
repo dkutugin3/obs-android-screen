@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25 FATAL_ERROR)
 
 project(obs-android-adb
-  VERSION 2.0.1
+  VERSION 2.0.2
   DESCRIPTION "Android Screen (ADB) source plugin for OBS Studio — scrcpy protocol over USB"
   LANGUAGES C CXX)
 

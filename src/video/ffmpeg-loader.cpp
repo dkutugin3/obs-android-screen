@@ -134,8 +134,9 @@ bool load(std::string *err)
 			}
 		};
 #define FF_RESOLVE(m, fn) sym(m, #fn, (void **)&fn##_p)
-		FF_RESOLVE(avutil, av_packet_alloc);
-		FF_RESOLVE(avutil, av_packet_free);
+		// FFmpeg 8 moved the AVPacket API from libavutil to libavcodec.
+		FF_RESOLVE(avcodec, av_packet_alloc);
+		FF_RESOLVE(avcodec, av_packet_free);
 		FF_RESOLVE(avutil, av_frame_alloc);
 		FF_RESOLVE(avutil, av_frame_free);
 		FF_RESOLVE(avutil, av_frame_unref);
