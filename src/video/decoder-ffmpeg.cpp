@@ -14,6 +14,7 @@ extern "C" {
 #include <libavutil/frame.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/log.h>
+#include <libavutil/pixdesc.h>
 #include <libavutil/pixfmt.h>
 }
 
@@ -39,6 +40,7 @@ struct Decoder::Impl {
 	AVPacket *pkt = nullptr;
 	AVFrame *frame = nullptr;
 	std::vector<uint8_t> extradata; // Annex-B parameter sets
+	std::vector<uint8_t> nv12;     // YUV420P -> NV12 conversion scratch
 	bool open = false;
 	bool loggedDecoder = false;
 
@@ -103,15 +105,39 @@ struct Decoder::Impl {
 
 	void deliver(AVFrame *f)
 	{
-		if (f->format != AV_PIX_FMT_NV12 || !f->data[0] || !f->data[1])
+		if (!f->data[0])
 			return;
 		DecodedFrame out;
-		out.y = f->data[0];
-		out.uv = f->data[1];
-		out.yStride = (uint32_t)f->linesize[0];
-		out.uvStride = (uint32_t)f->linesize[1];
 		out.width = (uint32_t)f->width;
 		out.height = (uint32_t)f->height;
+		if (f->format == AV_PIX_FMT_NV12 && f->data[1]) {
+			out.y = f->data[0];
+			out.uv = f->data[1];
+			out.yStride = (uint32_t)f->linesize[0];
+			out.uvStride = (uint32_t)f->linesize[1];
+		} else if (f->format == AV_PIX_FMT_YUV420P && f->data[1] && f->data[2]) {
+			// Interleave the planar U/V planes into NV12.
+			size_t ySize = (size_t)f->width * f->height;
+			nv12.resize(ySize + ySize / 2);
+			for (int r = 0; r < f->height; r++)
+				memcpy(nv12.data() + (size_t)r * f->width, f->data[0] + (size_t)r * f->linesize[0], f->width);
+			uint8_t *uv = nv12.data() + ySize;
+			for (int r = 0; r < (f->height + 1) / 2; r++) {
+				const uint8_t *u = f->data[1] + (size_t)r * f->linesize[1];
+				const uint8_t *v = f->data[2] + (size_t)r * f->linesize[2];
+				for (int c = 0; c < (f->width + 1) / 2; c++) {
+					uv[2 * c] = u[c];
+					uv[2 * c + 1] = v[c];
+				}
+				uv += f->width;
+			}
+			out.y = nv12.data();
+			out.uv = nv12.data() + ySize;
+			out.yStride = (uint32_t)f->width;
+			out.uvStride = (uint32_t)f->width;
+		} else {
+			return; // exotic pixel format — drop
+		}
 		if (output)
 			output(out, (uint64_t)f->pts, f->flags & AV_FRAME_FLAG_KEY);
 	}
