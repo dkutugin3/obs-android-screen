@@ -617,6 +617,9 @@ obs_properties_t *AndroidSource::properties()
 
 	obs_property_t *br = obs_properties_add_list(
 		props, "bitrate_mbps", aadText("Bitrate"), OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(br, "80 Mbps", 80);
+	obs_property_list_add_int(br, "50 Mbps", 50);
+	obs_property_list_add_int(br, "40 Mbps", 40);
 	obs_property_list_add_int(br, "30 Mbps", 30);
 	obs_property_list_add_int(br, "20 Mbps", 20);
 	obs_property_list_add_int(br, "12 Mbps", 12);

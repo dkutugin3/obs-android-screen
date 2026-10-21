@@ -132,13 +132,18 @@ Macs can build a universal binary with
 
 Settings: codec (H.264 default / H.265), resolution (Native / 1080p / 1440p /
 720p — the value caps the long edge, matching scrcpy's `--max-size`), FPS
-(15–165, default 60), bitrate (4–30 Mbps, default 20), capture audio, turn
+(15–165, default 60), bitrate (4–80 Mbps, default 20), capture audio, turn
 device screen off while mirroring, keep device awake, auto reconnect.
 FPS is a *maximum*: the phone only produces what its display refresh rate
 and encoder allow (e.g. 120 on a 120 Hz screen; asking for 144/165 there
 still yields 120). OBS also only renders/records above 60 fps if the canvas
 itself is configured for it (Settings → Video → Common FPS Values →
 fractional/custom).
+
+High bitrates (40–80 Mbps) are intended for USB connections, local
+recording and high-frame-rate content — they minimize compression
+artifacts but exceed what streaming platforms accept, so lower them for
+actual streams.
 Under **Advanced** you can point to a specific `adb` executable.
 
 If the cable is unplugged the source shows a **Device disconnected /
