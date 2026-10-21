@@ -35,7 +35,7 @@ references the following third-party components:
 
 ## FFmpeg / libavcodec (bundled on Windows)
 
-- **What:** `avcodec-62.dll` and `avutil-60.dll` from the BtbN win64 LGPL
+- **What:** `avcodec-62.dll`, `avutil-60.dll` and `swresample-6.dll` from the BtbN win64 LGPL
   **shared** build of FFmpeg 8.1 (<https://github.com/BtbN/FFmpeg-Builds>),
   used for software H.264/HEVC decoding on Windows. Shipped next to the
   plugin DLL; also required at build time for the Windows target.

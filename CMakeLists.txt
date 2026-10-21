@@ -322,7 +322,8 @@ if(ENABLE_TESTS)
       # dependencies must sit next to it.
       set(_tests_deps ${MINGW_RUNTIME_DLLS}
         "${_ff_root}/bin/avcodec-62.dll"
-        "${_ff_root}/bin/avutil-60.dll")
+        "${_ff_root}/bin/avutil-60.dll"
+        "${_ff_root}/bin/swresample-6.dll")
       add_custom_command(TARGET obs-android-adb-tests POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_tests_deps} $<TARGET_FILE_DIR:obs-android-adb-tests>)
     endif()
@@ -361,6 +362,7 @@ if(WIN32)
     COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:${BUNDLE_NAME}>" "${_win_dll_dir}/${BUNDLE_NAME}.dll"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_ff_root}/bin/avcodec-62.dll" "${_win_dll_dir}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_ff_root}/bin/avutil-60.dll" "${_win_dll_dir}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_ff_root}/bin/swresample-6.dll" "${_win_dll_dir}"
     ${_mingw_rt_copy}
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_win_data_dir}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SCRCPY_SERVER_PATH}"
