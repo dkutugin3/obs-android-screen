@@ -607,6 +607,8 @@ obs_properties_t *AndroidSource::properties()
 
 	obs_property_t *fps = obs_properties_add_list(
 		props, "fps", aadText("FPS"), OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(fps, "165", 165);
+	obs_property_list_add_int(fps, "144", 144);
 	obs_property_list_add_int(fps, "120", 120);
 	obs_property_list_add_int(fps, "90", 90);
 	obs_property_list_add_int(fps, "60", 60);
