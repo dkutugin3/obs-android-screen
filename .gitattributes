@@ -1,0 +1,6 @@
+*.sh text eol=lf
+*.yml text eol=lf
+*.cpp text
+*.hpp text
+*.txt text
+*.md text
