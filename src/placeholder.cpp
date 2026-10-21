@@ -12,7 +12,7 @@ static CFStringRef makeCFString(const std::string &s)
 }
 
 static void drawLine(CGContextRef ctx, const std::string &text, const std::string &fontName, CGFloat fontSize,
-	CGFloat x, CGFloat y)
+	CGFloat x, CGFloat y, CGFloat gray = 1.0, bool alignRight = false)
 {
 	if (text.empty())
 		return;
@@ -20,8 +20,9 @@ static void drawLine(CGContextRef ctx, const std::string &text, const std::strin
 	CFStringRef cfFont = makeCFString(fontName);
 
 	CTFontRef font = CTFontCreateWithName(cfFont, fontSize, nullptr);
+	CGColorRef color = CGColorCreateGenericGray(gray, 1.0);
 	CFStringRef keys[] = {kCTFontAttributeName, kCTForegroundColorAttributeName};
-	CFTypeRef values[] = {font, CGColorGetConstantColor(kCGColorWhite)};
+	CFTypeRef values[] = {font, color};
 	CFDictionaryRef attrs = CFDictionaryCreate(kCFAllocatorDefault, (const void **)keys, (const void **)values,
 		2, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
 
@@ -29,12 +30,15 @@ static void drawLine(CGContextRef ctx, const std::string &text, const std::strin
 		CFAttributedStringCreate(kCFAllocatorDefault, cfText, attrs);
 	CTLineRef line = CTLineCreateWithAttributedString(attrString);
 
+	if (alignRight)
+		x -= (CGFloat)CTLineGetTypographicBounds(line, nullptr, nullptr, nullptr);
 	CGContextSetTextPosition(ctx, x, y);
 	CTLineDraw(line, ctx);
 
 	CFRelease(line);
 	CFRelease(attrString);
 	CFRelease(attrs);
+	CGColorRelease(color);
 	CFRelease(font);
 	CFRelease(cfFont);
 	CFRelease(cfText);
@@ -83,6 +87,10 @@ Frame render(const std::string &line1, const std::string &line2, uint32_t width,
 	CGFloat base1 = (CGFloat)height - margin - (CGFloat)height * 0.32f;
 	drawLine(ctx, line1, "Helvetica-Bold", fontSize1, margin, base1);
 	drawLine(ctx, line2, "Helvetica", fontSize2, margin, base1 - fontSize1 * 1.5f);
+
+	// Small dim credit in the bottom-right corner (brand caption).
+	drawLine(ctx, "by Garay", "Helvetica", (CGFloat)height / 44.0f,
+		(CGFloat)width - margin, margin, 0.45f, true);
 
 	CGContextRelease(ctx);
 	CGColorSpaceRelease(gray);

@@ -92,11 +92,12 @@ static void testPlaceholder()
 	// Glyph orientation regression (bug #7): a huge 'L' must be upright in
 	// the buffer — its ink mass must sit in the LOWER half of its band (the
 	// foot), not the upper half. A CTM flip in the renderer mirrors glyphs.
+	// Scanned in the LEFT half only: the corner credit lives bottom-right.
 	auto g = placeholder::render("L", "", 640, 360);
 	CHECK(g.valid());
 	auto inkAt = [&g](uint32_t row) {
 		long ink = 0;
-		for (uint32_t c = 0; c < g.width; c++)
+		for (uint32_t c = 0; c < g.width / 2; c++)
 			if (g.data[(size_t)row * g.width + c] > 0x40)
 				ink++;
 		return ink;
@@ -116,13 +117,14 @@ static void testPlaceholder()
 		CHECK(lower > upper); // upright: foot-heavy
 	}
 
-	// Layout: first line above second line, both in the upper-middle band.
+	// Layout: first line above second line, both in the upper-middle band
+	// (left half — the credit caption sits bottom-right).
 	auto t = placeholder::render("BIGLINE", "smallline", 640, 360);
 	CHECK(t.valid());
 	int firstRow = -1, prevInk = -10, lines = 0;
 	for (uint32_t r = 0; r < t.height; r++) {
 		long ink = 0;
-		for (uint32_t c = 0; c < t.width; c++)
+		for (uint32_t c = 0; c < t.width / 2; c++)
 			if (t.data[(size_t)r * t.width + c] > 0x40)
 				ink++;
 		if (ink > 3) {
@@ -136,6 +138,14 @@ static void testPlaceholder()
 	}
 	CHECK(lines == 2);
 	CHECK(firstRow > 0 && firstRow < (int)t.height / 2); // starts in the top half
+
+	// Credit caption: dim ink in the bottom-right quadrant, above background.
+	long credit = 0;
+	for (uint32_t r = t.height * 3 / 4; r < t.height; r++)
+		for (uint32_t c = t.width * 3 / 5; c < t.width; c++)
+			if (t.data[(size_t)r * t.width + c] > 0x20 && t.data[(size_t)r * t.width + c] < 0xC0)
+				credit++;
+	CHECK(credit > 20);
 }
 
 // --- VideoToolbox decoder over a synthetic stream ---------------------------
