@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25 FATAL_ERROR)
 
 project(obs-android-adb
-  VERSION 1.0.0
+  VERSION 1.1.0
   DESCRIPTION "Android Screen (ADB) source plugin for OBS Studio — scrcpy protocol over USB"
   LANGUAGES C CXX)
 
@@ -111,6 +111,33 @@ if(NOT EXISTS "${SCRCPY_SERVER_PATH}")
 endif()
 
 # ---------------------------------------------------------------------------
+# Bundled adb (platform-tools): makes the plugin dependency-free for end
+# users. Google ships adb as a universal (x86_64+arm64) Mach-O binary under
+# Apache-2.0. Set BUNDLE_ADB=OFF to rely on a system-installed adb instead.
+# ---------------------------------------------------------------------------
+set(ANDROID_PLATFORM_TOOLS_URL "https://dl.google.com/android/repository/platform-tools-latest-darwin.zip"
+  CACHE STRING "platform-tools zip to take the bundled adb from")
+option(BUNDLE_ADB "Bundle the adb binary inside the plugin" ON)
+set(_adb_src "${_deps_dir}/platform-tools/adb")
+if(BUNDLE_ADB AND NOT EXISTS "${_adb_src}")
+  set(_adb_zip "${_deps_dir}/platform-tools.zip")
+  if(NOT EXISTS "${_adb_zip}")
+    message(STATUS "Downloading Android platform-tools (bundled adb)")
+    file(DOWNLOAD "${ANDROID_PLATFORM_TOOLS_URL}" "${_adb_zip}" SHOW_PROGRESS STATUS _adb_status)
+    list(GET _adb_status 0 _adb_code)
+    if(NOT _adb_code EQUAL 0)
+      list(GET _adb_status 1 _adb_err)
+      file(REMOVE "${_adb_zip}")
+      message(FATAL_ERROR "Failed to download platform-tools: ${_adb_err}")
+    endif()
+  endif()
+  file(ARCHIVE_EXTRACT INPUT "${_adb_zip}" DESTINATION "${_deps_dir}")
+endif()
+if(BUNDLE_ADB AND NOT EXISTS "${_adb_src}")
+  message(FATAL_ERROR "adb not found after extracting platform-tools")
+endif()
+
+# ---------------------------------------------------------------------------
 # Plugin target
 # ---------------------------------------------------------------------------
 add_library(${BUNDLE_NAME} MODULE
@@ -183,6 +210,14 @@ endif()
 # ---------------------------------------------------------------------------
 configure_file(cmake/Info.plist.in "${CMAKE_BINARY_DIR}/Info.plist" @ONLY)
 
+set(_bundle_adb_commands)
+if(BUNDLE_ADB)
+  list(APPEND _bundle_adb_commands
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_adb_src}" "${BUNDLE_CONTENTS}/Resources/adb/adb"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/third_party/adb/NOTICE.txt"
+      "${BUNDLE_CONTENTS}/Resources/adb/NOTICE.txt")
+endif()
+
 # A dedicated always-running target so data-file changes are picked up even
 # when the module itself does not need relinking.
 add_custom_target(obs-android-adb-bundle
@@ -194,6 +229,7 @@ add_custom_target(obs-android-adb-bundle
   COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:${BUNDLE_NAME}>" "${BUNDLE_CONTENTS}/MacOS/${BUNDLE_NAME}.so"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_BINARY_DIR}/Info.plist" "${BUNDLE_CONTENTS}/Info.plist"
   COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SCRCPY_SERVER_PATH}" "${BUNDLE_CONTENTS}/Resources/${SCRCPY_SERVER_FILE}"
+  ${_bundle_adb_commands}
   COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/data" "${BUNDLE_CONTENTS}/Resources"
   COMMAND codesign --force --sign - --timestamp=none "${BUNDLE_DIR}"
   COMMAND ${CMAKE_COMMAND} -E echo "Bundle: ${BUNDLE_DIR}"

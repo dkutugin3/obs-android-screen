@@ -7,6 +7,7 @@
 #include <signal.h>
 #include <spawn.h>
 #include <sys/stat.h>
+#include <sys/xattr.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -251,12 +252,17 @@ std::string findAdb(const std::string &overridePath)
 	if (!overridePath.empty() && isExecutableFile(overridePath))
 		return overridePath;
 
-	// Bundled copy (optional)
+	// Bundled copy (Resources/adb/adb), preferred over system installs so the
+	// plugin works without platform-tools. A copy downloaded inside an
+	// archive may carry a quarantine xattr, which makes macOS kill the
+	// process on exec — drop it so Gatekeeper never sees the file.
 	const char *dataPath = getenv("OBS_ANDROID_ADB_BUNDLE_DIR");
 	if (dataPath) {
-		std::string bundled = std::string(dataPath) + "/bin/adb";
-		if (isExecutableFile(bundled))
+		std::string bundled = std::string(dataPath) + "/adb";
+		if (isExecutableFile(bundled)) {
+			removexattr(bundled.c_str(), "com.apple.quarantine", 0);
 			return bundled;
+		}
 	}
 
 	static const char *candidates[] = {

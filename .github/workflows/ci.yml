@@ -37,6 +37,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: obs-android-adb-macos-arm64
-          path: release/*.zip
+          name: obs-android-adb-macos
+          path: release/*
           retention-days: 14

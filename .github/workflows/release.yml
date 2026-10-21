@@ -14,9 +14,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure and build
+      - name: Configure and build (universal arm64 + x86_64)
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release -G Ninja
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -G Ninja \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
           cmake --build build
 
       - name: Offline tests
@@ -39,17 +40,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ZIP="$(ls release/*.zip)"
-          gh release create "${GITHUB_REF_NAME}" "${ZIP}" "${ZIP}.sha256" \
+          gh release create "${GITHUB_REF_NAME}" release/* \
             --title "obs-android-adb ${GITHUB_REF_NAME}" \
             --generate-notes \
             --notes-file - <<'EOF'
-          Android Screen (ADB) source for OBS Studio — macOS (Apple Silicon).
+          Android Screen (ADB) source for OBS Studio — macOS (universal:
+          Apple Silicon + Intel).
 
-          **Install:** download the `.zip`, unzip, and copy
+          **Install:** open the `.dmg`, quit OBS, copy
           `obs-android-adb.plugin` to
-          `~/Library/Application Support/obs-studio/plugins/` (see
-          `INSTALL.txt` inside the zip). Requires OBS 30+ and
-          [adb](https://formulae.brew.sh/cask/android-platform-tools) — full
-          instructions in the README.
+          `~/Library/Application Support/obs-studio/plugins/` (step-by-step
+          `INSTALL.txt` inside). Requires OBS 30+ — **adb is bundled**, no
+          other dependencies. Full instructions in the README.
           EOF

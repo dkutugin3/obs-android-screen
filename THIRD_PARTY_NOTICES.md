@@ -18,6 +18,21 @@ references the following third-party components:
   follows scrcpy's app sources (`app/src/demuxer.c`, `app/src/server.c`,
   `server/src/.../DesktopConnection.java`, `Streamer.java`).
 
+## Android platform tools — adb binary (bundled)
+
+- **What:** the official `adb` executable from Google's Android SDK Platform
+  Tools, downloaded at build time from
+  <https://dl.google.com/android/repository/platform-tools-latest-darwin.zip>
+  (universal Mach-O: arm64 + x86_64) and shipped inside the plugin bundle at
+  `Contents/Resources/adb/adb`.
+- **Copyright:** © Google LLC and the Android Open Source Project
+  contributors
+- **License:** Apache License 2.0 /
+  <https://developer.android.com/tools/releases/platform-tools>
+- The upstream `NOTICE.txt` is reproduced at
+  [`third_party/adb/NOTICE.txt`](third_party/adb/NOTICE.txt) and shipped
+  alongside the binary in the bundle.
+
 ## simde (build-time dependency)
 
 - **What:** [simde](https://github.com/simd-everywhere/simde)

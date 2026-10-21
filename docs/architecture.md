@@ -52,6 +52,10 @@ thousands of lines and legal/auth surface for zero benefit.
 
 ADB commands used:
 - `adb devices -l` — enumerate devices (serial, state, `model:` property)
+- bundled `adb` (`Resources/adb/adb`) — Google platform-tools, Apache-2.0;
+  resolution order: user override → bundled → Homebrew/system/PATH; the
+  plugin strips any `com.apple.quarantine` xattr from the bundled copy so a
+  zip-installed plugin is not killed by Gatekeeper on exec
 - `adb -s SERIAL shell getprop ro.product.marketname` — friendly name cache
 - `adb -s SERIAL push scrcpy-server /data/local/tmp/scrcpy-server.jar`
 - `adb -s SERIAL forward tcp:PORT localabstract:scrcpy_%08x` (and `--remove`)
@@ -258,7 +262,7 @@ States: `Idle → Connecting → Streaming ⇄ Reconnecting → (Destroyed)`.
 | libobs API | OBS Studio 32.x headers (fetched at configure) | GPL-2.0 (API usage) | unresolved at build, resolved from OBS.app at load (`-undefined dynamic_lookup`) |
 | VideoToolbox / CoreMedia / CoreVideo / CoreText / CoreGraphics | macOS system | Apple SDK | system frameworks |
 | scrcpy-server v4.1 binary | Genymobile release | Apache-2.0 | pushed to device |
-| adb binary | user-installed platform-tools (optional bundled copy) | Apache-2.0 | subprocess |
+| adb binary | bundled Google platform-tools binary (fallback: user-installed) | Apache-2.0 | subprocess, `Resources/adb/adb` |
 
 Plugin code: **GPL-2.0-or-later**. libobs is GPL-2.0 and the OBS project
 treats plugins linking libobs as derivative works, so the plugin carries a

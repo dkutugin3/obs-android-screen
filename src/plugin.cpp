@@ -121,6 +121,14 @@ bool obs_module_load(void)
 		blog(LOG_WARNING, LOGP "scrcpy-server not found in plugin data");
 	}
 
+	// Bundled adb (built with BUNDLE_ADB=ON): Resources/adb/adb. Makes the
+	// plugin work out of the box without platform-tools installed.
+	char *adbDir = obs_module_file("adb");
+	if (adbDir) {
+		setenv("OBS_ANDROID_ADB_BUNDLE_DIR", adbDir, 0 /* do not overwrite */);
+		bfree(adbDir);
+	}
+
 	obs_register_source(&androidScreenSourceInfo);
 	blog(LOG_INFO, LOGP "plugin v" PLUGIN_VERSION " loaded (scrcpy protocol v" SCRCPY_SERVER_VERSION ")");
 	return true;

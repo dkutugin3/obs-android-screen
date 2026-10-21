@@ -30,13 +30,17 @@ of the scrcpy protocol exactly as `app/src/demuxer.c` in scrcpy does.
 | macOS | 15+ (Sequoia), Apple Silicon (arm64) |
 | OBS Studio | 30.0+ (tested with 32.2.2) |
 | Android device | Android 11+ for audio; any scrcpy-supported Android for video (**live-tested**: Galaxy S26-class SM-S942B / Android 16) |
-| Android Platform Tools (adb) | any recent (`brew install --cask android-platform-tools`) |
 | On the phone | Developer options → USB debugging enabled |
+
+**No other dependencies**: `adb` is bundled inside the plugin (the official
+Google platform-tools binary, Apache-2.0, universal arm64 + x86_64). If you
+already have platform-tools installed, the plugin can use your copy instead
+(see **Advanced** in the source properties).
 | Build toolchain | Xcode Command Line Tools, CMake ≥ 3.25, Ninja (optional) |
 
 The plugin links only system frameworks (VideoToolbox/CoreMedia/CoreVideo/
-CoreText/CoreGraphics) — no FFmpeg, no bundled dylibs. libobs symbols resolve
-from OBS itself at load time.
+CoreText/CoreGraphics) — no FFmpeg, no bundled dylibs — and ships its own
+`adb`. libobs symbols resolve from OBS itself at load time.
 
 ## Build
 
@@ -73,19 +77,21 @@ ffmpeg -f lavfi -i testsrc2=size=2340x1080:rate=60 -t 1 -c:v libx264 \
 
 ### From a release (recommended)
 
-1. Download the latest `obs-android-adb-<version>-macos-arm64.zip` from
-   [Releases](../../releases).
-2. Unzip it and copy `obs-android-adb.plugin` to
+1. Download the latest `obs-android-screen-<version>-macos.dmg` from
+   [Releases](../../releases) (a `.zip` with the same content is also
+   attached). Inside the archive is `obs-android-adb.plugin` and an
+   `INSTALL.txt` with these steps.
+2. Quit OBS Studio, then copy `obs-android-adb.plugin` to
    `~/Library/Application Support/obs-studio/plugins/` (create the `plugins`
-   folder if needed — an `INSTALL.txt` with step-by-step instructions is
-   inside the zip).
+   folder if needed).
 
    ```bash
-   unzip obs-android-adb-*-macos-arm64.zip
    mkdir -p ~/Library/Application\ Support/obs-studio/plugins
-   cp -R obs-android-adb.plugin ~/Library/Application\ Support/obs-studio/plugins/
+   cp -R /Volumes/obs-android-screen*/obs-android-adb.plugin \
+     ~/Library/Application\ Support/obs-studio/plugins/
    ```
-3. Restart OBS Studio.
+3. Restart OBS Studio — done. No Homebrew, no platform-tools, no extra
+   permissions needed.
 
 ### From source
 
@@ -168,7 +174,7 @@ OBS_ANDROID_ADB_DUMP=/tmp/android.h264 open -a OBS
 |---|---|
 | **Device is not authorized** | Unlock the phone, watch for the "Allow USB debugging?" prompt, tap Allow. The source retries automatically. If it never appears: `adb kill-server && adb start-server`, re-plug the cable. |
 | **device offline** | `adb devices` shows `offline`: bad cable/port or adb daemon hiccup — `adb kill-server`, reconnect. The source recovers by itself. |
-| **adb not found** | Install platform tools: `brew install --cask android-platform-tools`, or set the explicit path in the source's **Advanced** section. macOS may also ask to allow the `adb` binary on first run. |
+| **adb not found** | Only possible in custom builds with `BUNDLE_ADB=OFF`: install platform tools (`brew install --cask android-platform-tools`) or set the explicit path in the source's **Advanced** section. Release builds bundle adb. |
 | **Black screen** | 1) Check the OBS log (`Help → Log Files → View Current Log`) for `[obs-android-adb]` lines. 2) Set `OBS_ANDROID_ADB_DUMP=/tmp/android.h264`, reproduce and try `ffplay /tmp/android.h264` — if it plays, decoding is the issue (switch codec H.265 ↔ H.264); if not, transport/device is the issue. 3) Some devices fail to start an encoder at exotic sizes — try resolution Native or 1080p. |
 | **No audio** | Audio capture needs Android 11+ and is blocked for DRM-protected content (Netflix etc.) — this is an Android `AudioPlaybackCapture` restriction. Also check "Capture device audio" in the source properties and that the source is not muted in the OBS mixer. The OBS log shows `audio capture started` or `audio disabled: ...`. |
 | **decoder initialization failed** | The device produced parameter sets VideoToolbox rejected (rare OEM encoder quirk). Switch codec, or file an issue with the log excerpt. |

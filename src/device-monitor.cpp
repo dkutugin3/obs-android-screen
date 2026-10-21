@@ -177,6 +177,7 @@ void DeviceMonitor::runTracker()
 		adbPath_ = adb;
 	}
 	trackerPid_ = pid;
+	blog(LOG_INFO, "[obs-android-adb] using adb: %s", adb.c_str());
 	blog(LOG_INFO, "[obs-android-adb] tracking device events (adb track-devices)");
 
 	// `adb track-devices` output is a sequence of messages, each framed as a
