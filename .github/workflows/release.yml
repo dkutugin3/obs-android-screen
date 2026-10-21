@@ -84,12 +84,17 @@ jobs:
         with:
           name: win-release
           path: release/
+      - name: Flatten release directory
+        run: |
+          find release -mindepth 2 -type f -exec mv {} release/ \;
+          find release -mindepth 1 -type d -delete
 
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" release/* \
+          FILES="$(find release -type f | tr '\n' ' ')"
+          gh release create "${GITHUB_REF_NAME}" ${FILES} \
             --title "obs-android-adb ${GITHUB_REF_NAME}" \
             --generate-notes \
             --notes-file - <<'EOF'
