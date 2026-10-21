@@ -44,6 +44,7 @@ struct Decoder::Impl {
 
 	Impl(OutputFn out, scrcpy::VideoCodecId c) : output(std::move(out)), codec(c)
 	{
+		av_log_set_level(AV_LOG_ERROR);
 		AVCodecID id = c == scrcpy::VideoCodecId::H265 ? AV_CODEC_ID_HEVC : AV_CODEC_ID_H264;
 		decoder = avcodec_find_decoder(id);
 		if (!decoder) {
@@ -186,8 +187,21 @@ bool Decoder::decode(const uint8_t *data, size_t len, uint64_t ptsNs, bool keyFr
 
 void Decoder::flush()
 {
-	if (impl_ && impl_->open)
-		avcodec_flush_buffers(impl_->ctx);
+	if (!impl_ || !impl_->open)
+		return;
+	// Drain everything the decoder still holds (send EOF, then collect), and
+	// reset for the next segment afterwards.
+	avcodec_send_packet(impl_->ctx, nullptr);
+	while (true) {
+		int ret = avcodec_receive_frame(impl_->ctx, impl_->frame);
+		if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+			break;
+		if (ret < 0)
+			break;
+		impl_->deliver(impl_->frame);
+		av_frame_unref(impl_->frame);
+	}
+	avcodec_flush_buffers(impl_->ctx);
 }
 
 } // namespace video

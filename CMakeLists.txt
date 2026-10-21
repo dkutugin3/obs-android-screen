@@ -317,10 +317,14 @@ if(ENABLE_TESTS)
     target_include_directories(obs-android-adb-tests PRIVATE "${_ff_root}/include")
     target_link_libraries(obs-android-adb-tests PRIVATE
       "${_ff_root}/lib/avcodec.lib" "${_ff_root}/lib/avutil.lib" ws2_32 gdi32)
-    if(MINGW AND MINGW_RUNTIME_DLLS)
-      # let the test executable run from the build tree
+    if(MINGW)
+      # Let the test executable run from the build tree: its DLL
+      # dependencies must sit next to it.
+      set(_tests_deps ${MINGW_RUNTIME_DLLS}
+        "${_ff_root}/bin/avcodec-62.dll"
+        "${_ff_root}/bin/avutil-60.dll")
       add_custom_command(TARGET obs-android-adb-tests POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${MINGW_RUNTIME_DLLS} $<TARGET_FILE_DIR:obs-android-adb-tests>)
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_tests_deps} $<TARGET_FILE_DIR:obs-android-adb-tests>)
     endif()
   else()
     target_compile_options(obs-android-adb-tests PRIVATE -Wno-unused-parameter)
